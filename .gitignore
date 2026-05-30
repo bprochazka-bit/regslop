@@ -1,0 +1,6 @@
+target/
+tests/corpus/hives/
+tests/harness/results/
+tests/fuzz/corpus/pending/
+**/STATE.md.bak
+**/audit.log

@@ -1,0 +1,259 @@
+# libreg Contracts
+
+This file is the single source of truth for interfaces between components.
+All agents read this file. Only the spec agent writes to it.
+Changes require a PR labeled `contracts` and a version bump.
+
+**Current version: 0.1.0**
+
+## Versioning
+
+Contracts follow semver. Implementation agents pin to a minor version.
+
+- PATCH: clarifications, typo fixes, no wire/format change
+- MINOR: additive changes (new endpoints, new optional fields)
+- MAJOR: breaking changes
+
+Bumping requires updating `version` in agent handshakes and in the harness
+config. The harness refuses to run if Linux and Windows agents report
+different major versions.
+
+## Component Map
+
+```
+libreg          Linux-side library, layered (format/allocator/logical/log/api)
+agents/linux    HTTP server wrapping libreg, mirror of Windows agent
+agents/windows  HTTP server wrapping offreg.dll on Windows
+tests/harness   Driver that exercises both agents and runs the differ
+tests/fuzz      Operation/data/boundary fuzzers
+tests/corpus    Known-good hives from real Windows systems
+```
+
+## Agent HTTP Protocol
+
+Both agents implement the same protocol. The harness treats them
+interchangeably.
+
+### Transport
+
+- HTTP/1.1 over TCP
+- JSON request and response bodies, `Content-Type: application/json`
+- Default ports: Linux agent 7878, Windows agent 7879
+- All endpoints return `{ "ok": bool, "error": null | string, "data": ... }`
+- Errors include a stable `code` field for programmatic matching
+
+### Handshake
+
+```
+GET /version
+-> { "ok": true, "data": {
+     "agent": "linux" | "windows",
+     "protocol": "0.1.0",
+     "backend": "libreg-0.1.0" | "offreg-10.0.22621" }}
+```
+
+The harness calls this first on both agents and aborts on mismatch.
+
+### Hive lifecycle
+
+```
+POST /hive/create   { "path": "/tmp/test.hiv" }
+-> { "ok": true, "data": { "handle": "h_abc123" }}
+
+POST /hive/load     { "path": "/tmp/test.hiv" }
+-> { "ok": true, "data": { "handle": "h_abc123" }}
+
+POST /hive/save     { "handle": "h_abc123" }
+-> { "ok": true, "data": { "bytes_written": 8192 }}
+
+POST /hive/close    { "handle": "h_abc123" }
+-> { "ok": true, "data": {}}
+```
+
+Handles are opaque strings. Both agents must accept any string the other
+emits without parsing it.
+
+### Key operations
+
+```
+POST /key/create    { "handle", "path": "Software\\Foo\\Bar" }
+POST /key/delete    { "handle", "path": "Software\\Foo\\Bar", "recursive": false }
+POST /key/rename    { "handle", "path", "new_name" }
+GET  /key/list      { "handle", "path" }
+                    -> { "data": { "subkeys": [...], "values": [...] }}
+GET  /key/info      { "handle", "path" }
+                    -> { "data": { "last_write": "2026-01-15T12:00:00Z",
+                                   "class_name": null,
+                                   "subkey_count": 3,
+                                   "value_count": 5 }}
+```
+
+Path separator is `\\` (escaped backslash in JSON, literal backslash in path).
+Paths never start with a separator. Empty string `""` means the hive root.
+
+### Value operations
+
+```
+POST /value/set     { "handle", "key", "name", "type", "data" }
+POST /value/delete  { "handle", "key", "name" }
+GET  /value/get     { "handle", "key", "name" }
+                    -> { "data": { "type", "data" }}
+```
+
+Value types use Windows constants by name:
+
+| Type             | JSON `data` representation           |
+|------------------|--------------------------------------|
+| REG_NONE         | null                                 |
+| REG_SZ           | string                               |
+| REG_EXPAND_SZ    | string                               |
+| REG_BINARY       | base64 string                        |
+| REG_DWORD        | integer (little-endian semantics)    |
+| REG_DWORD_BE     | integer (big-endian semantics)       |
+| REG_LINK         | string                               |
+| REG_MULTI_SZ     | array of strings                     |
+| REG_QWORD        | integer (sent as string if > 2^53)   |
+| REG_RESOURCE_LIST etc. | base64 string (treat as opaque)|
+
+Default value is name `""` (empty string), not `"(Default)"`.
+
+### Security
+
+```
+GET  /key/security  { "handle", "path" }
+                    -> { "data": { "sddl": "O:BAG:BAD:..." }}
+POST /key/security  { "handle", "path", "sddl": "..." }
+```
+
+Security descriptors transit as SDDL strings. Agents are responsible for
+converting to/from the binary form. The harness compares both SDDL and
+canonical binary form.
+
+### Diagnostics
+
+```
+GET /hive/dump      { "handle" }
+                    -> { "data": { "canonical_json": {...} }}
+GET /hive/checksum  { "handle" }
+                    -> { "data": { "sha256_file": "...",
+                                   "sha256_canonical": "..." }}
+GET /hive/validate  { "handle" }
+                    -> { "data": { "valid": bool,
+                                   "errors": [...],
+                                   "warnings": [...] }}
+```
+
+The canonical JSON form is defined below and is what semantic diffs compare.
+
+## Canonical JSON Form
+
+Both agents must serialize hives to this exact structure for semantic
+comparison. Field order matters (use sorted keys). Whitespace does not
+(harness re-parses before diffing).
+
+```json
+{
+  "format_version": "0.1.0",
+  "root": {
+    "name": "",
+    "last_write": "ISO8601",
+    "class_name": null,
+    "security": { "sddl": "..." },
+    "values": [
+      { "name": "", "type": "REG_SZ", "data": "..." }
+    ],
+    "subkeys": [
+      { "name": "Software", ... recursive ... }
+    ]
+  }
+}
+```
+
+Rules:
+
+- `subkeys` and `values` arrays are sorted lexicographically by `name`
+- `name` comparisons are case-insensitive per Windows semantics, but the
+  original casing is preserved in the JSON
+- `last_write` is ISO 8601 UTC with second precision; nanoseconds are
+  dropped during canonicalization to allow cross-platform comparison
+- `class_name` is null when absent, never an empty string
+- Binary data is base64 with no line breaks, no padding stripped
+
+## Hive File Format Invariants
+
+These invariants must hold for any hive produced by libreg or offreg
+after a successful save. The harness checks all of these.
+
+1. Base block magic = `regf`
+2. Base block primary sequence = secondary sequence (clean hive)
+3. Base block checksum (XOR of dwords 0..507) matches stored value
+4. Total size (base block dword 40) matches actual hbin total
+5. Every hbin starts with magic `hbin`, has size multiple of 4096
+6. Every cell has size != 0; sign indicates allocated (-) or free (+)
+7. Allocated cells form a tree rooted at root cell offset (base block dword 36)
+8. Free cells are tracked in the allocator's free list (implementation defined)
+9. Sum of cell sizes within an hbin equals hbin size minus header
+10. No cell crosses an hbin boundary
+11. Subkey list cell types follow promotion: lf/lh for < 1015 entries,
+    ri for > 1015, li only when loading old hives
+12. Big-data cells (db) only for values whose data exceeds 16344 bytes
+13. Security cells form a doubly linked list with reference counts
+14. Reference counts on sk cells are accurate (no orphans, no dangling)
+15. Class name strings, if present, are UTF-16LE
+16. Key names are UTF-16LE if the nk flag VALUE_COMP_NAME is clear,
+    ASCII (Latin-1) if set
+17. Subkey lists are sorted; binary search is valid
+18. Transaction log files (.LOG1, .LOG2) are either absent (clean hive)
+    or contain a valid recovery sequence
+
+## Transaction Log Behavior
+
+For v1.5 hives (Windows 8.1+), libreg writes dual logs:
+
+- Dirty pages are written to whichever log has the older sequence number
+- The other log retains the previous-generation entries until commit
+- On crash recovery, both logs are inspected and the most recent
+  consistent set is applied
+
+Agents must save with logs by default. The harness has a separate test
+mode that simulates crashes between log write and primary write.
+
+## Test Categories
+
+Tests are tagged with one of:
+
+- `semantic` - canonical JSON equality after operation
+- `structural` - invariants 1-18 hold on both outputs
+- `bytewise` - exact byte equality (only when allocator behavior matches)
+- `roundtrip` - load corpus hive, save, re-load, compare to original
+- `recovery` - crash injection, log replay correctness
+- `fuzz` - generated operation sequences
+
+The harness reports per-tag pass rates. Bytewise failures with semantic
+pass are warnings, not errors.
+
+## Error Codes
+
+| Code                  | Meaning                                         |
+|-----------------------|-------------------------------------------------|
+| HIVE_NOT_FOUND        | path does not exist on agent's filesystem       |
+| HIVE_CORRUPT          | base block or hbin chain invalid                |
+| HANDLE_INVALID        | handle string not known to this agent           |
+| KEY_NOT_FOUND         | path resolution failed                          |
+| KEY_EXISTS            | create called on existing path                  |
+| VALUE_NOT_FOUND       | named value does not exist on key               |
+| TYPE_MISMATCH         | data shape does not match declared type         |
+| ACCESS_DENIED         | security descriptor blocks operation            |
+| LOG_CORRUPT           | transaction log replay failed                   |
+| INTERNAL              | bug; include stack/trace in error string        |
+
+## What This Document Does Not Cover
+
+- Internal data structures of libreg (each layer's CLAUDE.md owns those)
+- Build systems, packaging, CI (see top-level README.md when written)
+- Performance targets (deferred to v0.2)
+- Multi-user / concurrent access (libreg is single-writer for v0.1)
+
+## Change Log
+
+- 0.1.0 (initial): defines protocol, canonical form, hive invariants
