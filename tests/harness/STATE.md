@@ -2,6 +2,33 @@
 
 Last updated: 2026-05-31
 
+## SMB byte-pull: structural checks on offreg's live output (latest session)
+
+`--windows-smb` extends the byte-level structural invariants from the static
+corpus to every hive a differential run saves on the Windows side. The Windows
+agent has no raw-bytes endpoint, so the harness pulls the saved hive off the VM
+over the `winreg` SMB share (which maps to `C:\winreg`) and runs
+`structural::check_bytes` on it.
+
+- New `src/smb.rs`: `pull(host, name, local)` shells to `smbclient`. Creds are
+  baked in (temporal lab VM, throwaway `user`/`password`); documented in the
+  module. A pull failure is a warning, never a test failure.
+- `--windows-smb` forces the Windows hive dir to `C:\winreg` (so saves land in
+  the share) and sets the Windows client's `smb_host`. Only activates when the
+  windows-side agent actually reports `windows` (a Linux stand-in is skipped, it
+  emits no regf bytes).
+- `SeqResult.byte_invariants` (var -> invariant results) is populated after the
+  sequence by pulling each saved hive; `compute_structural` folds those real
+  results in alongside the dump-based 17/18, replacing the Skipped placeholders
+  for the Windows side.
+- Verified live: `./scripts/run.sh --windows-host vmreg.lan --windows-smb` ran
+  byte-level checks on 11 Windows hives, all PASS, structural GREEN. Confirms
+  offreg's live on-disk output satisfies the invariants the harness implements.
+
+This does not need libreg: it validates the Windows (oracle) bytes. The
+load-on-both differential roundtrip and the `bytewise` tag still wait on the
+Linux agent emitting regf (libreg's reader/writer).
+
 ## Corpus loader + byte-level structural invariants (latest session)
 
 PR #29 checked in offreg-generated synthetic hives under

@@ -3,12 +3,17 @@
 #
 # Usage:
 #   run.sh [--linux-port N] [--windows-host HOST] [--windows-port N]
-#          [--standin] [--tag TAG]
+#          [--standin] [--tag TAG] [--windows-smb]
 #
 # --standin starts a SECOND local Linux agent to stand in for the Windows side
 # during bring-up, so the full differential path (semantic, bytewise) exercises
 # before the real Windows agent exists. The two agents are protocol identical;
 # the harness treats them interchangeably.
+#
+# --windows-smb (passed through to the harness) pulls each saved Windows hive
+# off the VM over the `winreg` SMB share and runs the byte-level structural
+# invariants on offreg's live output. Needs a real offreg agent (not --standin)
+# and smbclient on this box.
 #
 # Builds in release. Cleans up spawned agents on exit. Debian first: native
 # binaries, no containers.

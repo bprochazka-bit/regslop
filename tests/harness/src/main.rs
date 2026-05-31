@@ -17,6 +17,7 @@ mod corpus;
 mod differ;
 mod report;
 mod runner;
+mod smb;
 mod util;
 
 mod winvm_lock;
@@ -39,6 +40,7 @@ struct Args {
     linux_hive_dir: String,
     windows_hive_dir: String,
     corpus_dir: PathBuf,
+    windows_smb: bool,
 }
 
 impl Default for Args {
@@ -55,6 +57,7 @@ impl Default for Args {
             linux_hive_dir: "/tmp".to_string(),
             windows_hive_dir: "C:\\Windows\\Temp".to_string(),
             corpus_dir: PathBuf::from("tests/corpus/synthetic"),
+            windows_smb: false,
         }
     }
 }
@@ -81,13 +84,14 @@ fn parse_args() -> Args {
             "--linux-hive-dir" => a.linux_hive_dir = next(),
             "--windows-hive-dir" => a.windows_hive_dir = next(),
             "--corpus-dir" => a.corpus_dir = PathBuf::from(next()),
+            "--windows-smb" => a.windows_smb = true,
             "-h" | "--help" => {
                 println!(
                     "libreg-harness [--linux-host H] [--linux-port N] \\\n  \
                      [--windows-host H] [--windows-port N] [--tests-dir DIR] \\\n  \
                      [--results-dir DIR] [--lock-path PATH] [--tag TAG] \\\n  \
                      [--linux-hive-dir DIR] [--windows-hive-dir DIR] \\\n  \
-                     [--corpus-dir DIR]"
+                     [--corpus-dir DIR] [--windows-smb]"
                 );
                 std::process::exit(0);
             }
@@ -146,14 +150,22 @@ fn load_tests(dir: &PathBuf) -> Vec<TestDef> {
 }
 
 fn main() -> ExitCode {
-    let args = parse_args();
+    let mut args = parse_args();
+    // SMB byte-pull needs the Windows agent to save into the exported `winreg`
+    // share, so force that hive dir when --windows-smb is on.
+    if args.windows_smb {
+        args.windows_hive_dir = "C:\\winreg".to_string();
+    }
 
     let (lhost, lport) = split_host_port(&args.linux_host, args.linux_port);
     let mut linux = Client::new("linux", &lhost, lport);
-    let mut windows = args.windows_host.as_ref().map(|h| {
-        let (whost, wport) = split_host_port(h, args.windows_port);
-        Client::new("windows", &whost, wport)
-    });
+    let windows_endpoint = args
+        .windows_host
+        .as_ref()
+        .map(|h| split_host_port(h, args.windows_port));
+    let mut windows = windows_endpoint
+        .as_ref()
+        .map(|(whost, wport)| Client::new("windows", whost, *wport));
 
     // Handshake. Abort on major version mismatch (CONTRACTS.md versioning).
     let lh = linux
@@ -195,6 +207,21 @@ fn main() -> ExitCode {
         configure(w, wa);
     }
 
+    // Enable SMB byte-pull on the real Windows agent (not a Linux stand-in,
+    // which has no regf bytes to pull).
+    if args.windows_smb {
+        match (windows.as_mut(), windows_agent.as_deref(), windows_endpoint.as_ref()) {
+            (Some(w), Some("windows"), Some((whost, _))) => {
+                w.set_smb_host(whost.clone());
+                eprintln!("SMB byte-pull enabled: pulling saved hives from //{whost}/winreg");
+            }
+            (Some(_), Some(other), _) => {
+                eprintln!("warning: --windows-smb ignored; the windows-side agent reports '{other}', not offreg");
+            }
+            _ => {}
+        }
+    }
+
     // The Windows VM is a shared resource: serialize harness runs behind an
     // advisory lock. Only needed when actually driving the Windows agent.
     let _vm_lock = if windows.is_some() {
@@ -227,6 +254,15 @@ fn main() -> ExitCode {
             eprintln!("Loaded {} corpus hives from {}", corpus.len(), args.corpus_dir.display());
             results.extend(corpus);
         }
+    }
+
+    if args.windows_smb {
+        let n: usize = results
+            .iter()
+            .filter_map(|r| r.windows.as_ref())
+            .map(|w| w.byte_invariants.len())
+            .sum();
+        eprintln!("SMB byte-pull: ran byte-level structural checks on {n} Windows hive(s)");
     }
 
     let now = util::now_unix();
