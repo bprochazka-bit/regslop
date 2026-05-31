@@ -1,0 +1,30 @@
+# Hive lifecycle: create, save, reload, close.
+name: empty_hive_roundtrip
+tags: [semantic, structural, bytewise, roundtrip]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_empty.hiv
+    capture: h
+  - op: hive_save
+    handle: $h
+  - op: hive_close
+    handle: $h
+expect:
+  semantic_equal: true
+  structural_valid: [linux, windows]
+---
+name: create_one_key_and_reload
+tags: [semantic, structural, bytewise, roundtrip]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_onekey.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: Software
+  - op: hive_save
+    handle: $h
+  - op: hive_close
+    handle: $h
+expect:
+  semantic_equal: true

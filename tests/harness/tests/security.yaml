@@ -1,0 +1,21 @@
+# Security descriptors transit as SDDL strings (CONTRACTS.md "Security").
+name: set_and_get_sddl
+tags: [semantic, roundtrip]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_security.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: Locked
+  - op: key_security_set
+    handle: $h
+    path: Locked
+    sddl: "O:BAG:BAD:(A;;KA;;;SY)(A;;KR;;;BU)"
+  - op: key_security_get
+    handle: $h
+    path: Locked
+  - op: hive_save
+    handle: $h
+expect:
+  semantic_equal: true

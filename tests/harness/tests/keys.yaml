@@ -1,0 +1,85 @@
+# Key operations: create (with intermediates), list, rename, delete, and the
+# error paths from the CONTRACTS.md error table.
+name: deep_key_create
+tags: [semantic, structural, roundtrip]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_deep.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: Software\Vendor\Product\Settings
+  - op: hive_save
+    handle: $h
+expect:
+  semantic_equal: true
+---
+name: key_create_existing_is_error
+tags: [semantic]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_exists.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: Software
+  - op: key_create
+    handle: $h
+    path: Software
+    expect_error: KEY_EXISTS
+expect:
+  semantic_equal: true
+---
+name: key_delete_missing_is_error
+tags: [semantic]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_delmiss.hiv
+    capture: h
+  - op: key_delete
+    handle: $h
+    path: Nope\Missing
+    expect_error: KEY_NOT_FOUND
+expect:
+  semantic_equal: true
+---
+name: key_delete_nonempty_needs_recursive
+tags: [semantic]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_nonempty.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: A\B
+  - op: key_delete
+    handle: $h
+    path: A
+    recursive: false
+    expect_error: ACCESS_DENIED
+  - op: key_delete
+    handle: $h
+    path: A
+    recursive: true
+  - op: hive_save
+    handle: $h
+expect:
+  semantic_equal: true
+---
+name: key_rename
+tags: [semantic, roundtrip]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_rename.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: OldName
+  - op: key_rename
+    handle: $h
+    path: OldName
+    new_name: NewName
+  - op: hive_save
+    handle: $h
+expect:
+  semantic_equal: true

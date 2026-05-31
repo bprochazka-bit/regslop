@@ -1,0 +1,122 @@
+# Value operations across the REG_* type table in CONTRACTS.md.
+name: all_value_types
+tags: [semantic, structural, roundtrip]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_values.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: Data
+  - op: value_set
+    handle: $h
+    key: Data
+    name: AString
+    type: REG_SZ
+    data: "hello world"
+  - op: value_set
+    handle: $h
+    key: Data
+    name: AnExpand
+    type: REG_EXPAND_SZ
+    data: "%PATH%"
+  - op: value_set
+    handle: $h
+    key: Data
+    name: ADword
+    type: REG_DWORD
+    data: 305419896
+  - op: value_set
+    handle: $h
+    key: Data
+    name: AQword
+    type: REG_QWORD
+    data: "4294967296"
+  - op: value_set
+    handle: $h
+    key: Data
+    name: ABinary
+    type: REG_BINARY
+    data: "AAECAwQF"
+  - op: value_set
+    handle: $h
+    key: Data
+    name: AMulti
+    type: REG_MULTI_SZ
+    data: ["one", "two", "three"]
+  - op: value_set
+    handle: $h
+    key: Data
+    name: ANone
+    type: REG_NONE
+    data: null
+  - op: value_set
+    handle: $h
+    key: Data
+    name: ""
+    type: REG_SZ
+    data: "the default value"
+  - op: hive_save
+    handle: $h
+expect:
+  semantic_equal: true
+---
+name: value_overwrite_and_delete
+tags: [semantic, roundtrip]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_valedit.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: K
+  - op: value_set
+    handle: $h
+    key: K
+    name: V
+    type: REG_DWORD
+    data: 1
+  - op: value_set
+    handle: $h
+    key: K
+    name: V
+    type: REG_DWORD
+    data: 2
+  - op: value_set
+    handle: $h
+    key: K
+    name: Temp
+    type: REG_SZ
+    data: "scratch"
+  - op: value_delete
+    handle: $h
+    key: K
+    name: Temp
+  - op: value_delete
+    handle: $h
+    key: K
+    name: Temp
+    expect_error: VALUE_NOT_FOUND
+  - op: hive_save
+    handle: $h
+expect:
+  semantic_equal: true
+---
+name: value_type_mismatch_rejected
+tags: [semantic]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_typemismatch.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: K
+  - op: value_set
+    handle: $h
+    key: K
+    name: Bad
+    type: REG_DWORD
+    data: "not a number"
+    expect_error: TYPE_MISMATCH
+expect:
+  semantic_equal: true
