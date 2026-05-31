@@ -13,9 +13,13 @@ for want of real hive bytes in the repo.
   + hbin/cell walk). Not a logical parser; the same parser will back the
   differential roundtrip once libreg can read `regf`.
 - `structural::check_bytes(bytes)`: evaluates invariants 1 to 6, 9, 10 from the
-  base block and hbin/cell structure against a real hive file. 7, 8, 11 to 16
-  need a logical-tree parse and stay `Skipped`; 17/18 belong to the agent-output
-  `check()`.
+  base block and hbin/cell structure, plus 11 (subkey-list cell form and entry
+  count) and 16 (key-name encoding per KEY_COMP_NAME) from a cell scan, against
+  a real hive file. The fixtures were built for these: `ref_latin1`/`ref_wide`
+  exercise inv16 (Latin-1 vs UTF-16LE names), `ref_one_ascii`/`ref_multi`
+  exercise inv11 (single vs multi-entry lh). Invariants needing a full
+  logical-tree walk (7, 8, 12 to 15) stay `Skipped`; 17/18 belong to the
+  agent-output `check()`.
 - New `src/corpus.rs`: reads every `*.hiv` under `--corpus-dir` (default
   `tests/corpus/synthetic`) and emits one `structural`-tagged `TestResult` per
   hive. Runs in every mode (it reads files, no agent needed). `run.sh` passes an
