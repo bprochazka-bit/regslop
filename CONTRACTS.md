@@ -4,7 +4,7 @@ This file is the single source of truth for interfaces between components.
 All agents read this file. Only the spec agent writes to it.
 Changes require a PR labeled `contracts` and a version bump.
 
-**Current version: 0.1.6**
+**Current version: 0.1.7**
 
 ## Versioning
 
@@ -252,8 +252,11 @@ the Xth dword.
 8. Free cells are tracked in the allocator's free list (implementation defined)
 9. Sum of cell sizes within an hbin equals hbin size minus the 32-byte header
 10. No cell crosses an hbin boundary
-11. Subkey list cell types follow promotion: lf/lh for < 1015 entries,
-    ri for > 1015, li only when loading old hives
+11. Subkey list cell types follow promotion: an lf/lh leaf holds at most
+    507 entries; a key with more than 507 subkeys uses an ri index root over
+    multiple leaves; li only when loading old hives. (Empirical, from offreg
+    via tests/corpus/synthetic/ref_ri.hiv: 1100 subkeys form an ri over
+    three lh leaves of 507, 507, and 86. The earlier "1015" was wrong.)
 12. Big-data cells (db) only for values whose data exceeds 16344 bytes
 13. Security cells form a doubly linked list with reference counts
 14. Reference counts on sk cells are accurate (no orphans, no dangling)
@@ -325,6 +328,10 @@ is distinct from `TYPE_MISMATCH`: the latter applies when a well-formed
 
 ## Change Log
 
+- 0.1.7 (patch): correct invariant 11's subkey-list promotion threshold from
+  the approximate "1015" to 507, the per-leaf cap offreg actually uses
+  (verified against tests/corpus/synthetic/ref_ri.hiv: 1100 subkeys form an
+  ri over lh leaves of 507, 507, 86). Documentation only; no wire change.
 - 0.1.6 (patch): confirm the read-request transport: reads are GET and carry
   their parameters in the JSON request body, not the query string (so GET
   requests carry a body). Documents existing behavior; rationale and the
