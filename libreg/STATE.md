@@ -2,33 +2,86 @@
 
 Last updated: 2026-05-31 (library agent)
 
-This session (branch `agent/library-allocator`, off current main): added
-Layer 1, the cell allocator (`src/alloc/`). Also verified all Layer 0
-field offsets against `docs/hive-format.md` (they match) and confirmed the
-spec agent answered the two gating questions (#22, #23) in PR #25.
+Branch chain (stacked, both off current main, merge in order):
+- `agent/library-allocator` -> PR #27: Layer 1 allocator (`src/alloc/`).
+- `agent/library-key-create` -> Layer 2 key create (`src/logical/`), this
+  session. Stacked on #27; merge #27 first.
+
+This session added Layer 2 (the logical key tree) and implemented step 4
+(single key create), with full-path/intermediate creation and name-sorted
+siblings. The prior session added Layer 1 (the allocator) and verified the
+Layer 0 offsets against `docs/hive-format.md` (they match).
 
 KEY UNBLOCK from PR #25 (docs/hive-format.md "What the differ compares"):
 for the `semantic` tag, a created subkey needs only the correct LOGICAL
 form (right name, security, values, name-sorted siblings). The subkey-list
 TYPE (lf vs lh) and the entry hash bytes are bytewise-only and invisible to
-the semantic differ. For bytewise parity write a one-element `lh`; cell
-placement is an allocator choice. So spec questions 3 and 4 below are now
-ANSWERED (annotated inline). Re-read CONTRACTS.md (0.1.6) and
-docs/hive-format.md before trusting older notes.
+the semantic differ. Layer 2 targets exactly that: it writes an `lh` leaf
+(bytewise-correct) but correctness rests on the logical form. Spec
+questions 3 and 4 are ANSWERED (annotated inline).
 
 ## Current layer
 
-Layer 1 (`alloc/`) as of this session. Layer 0 steps 1 and 2 done. Step 3
+Layer 2 (`logical/`) as of this session. Layers 0 and 1 in place. Step 3
 (empty hive creation) is IMPLEMENTED and self-validated, but NOT yet
 verified against offreg (acceptance is harness-gated; see caveat below).
 
-Step 4 (single key create) is partially built: its Layer 0 blocks (lf/lh
-leaf cells) and the created-key default security descriptor exist, and the
-allocator that the real insert path needs is now in place. What remains is
-the Layer 2 wiring (a child nk plus a one-element lh, the root nk's
-`subkeys_list_offset` / `subkey_count` updated, the child sk) and harness
-verification. The spec ambiguity that blocked it is resolved; see
-"What I would do next session".
+Step 4 (single key create) is IMPLEMENTED and offline-validated (structural
+tests below), but its acceptance test is "differ green on `semantic`",
+which needs the harness/Windows agent (not in this worktree). So step 4 is
+not yet CLOSED. The `Hive` API plus `to_file()` is the concrete artifact
+the harness agent can now drive (CLAUDE.md asks for one after step 4).
+
+## Layer 2: the logical key tree (this session)
+
+`src/logical/` turns cells into a key tree, calling DOWN into alloc and
+format only (layered discipline). The unit is `Hive` (a `HiveImage` plus
+the root offset). Implemented: key creation (single + full path, creating
+missing intermediates, idempotent), case-insensitive lookup, name-sorted
+subkey enumeration.
+
+- `logical/mod.rs`: `Hive` with `new_empty` / `from_file_bytes` / `to_file`,
+  `create_key(path)`, `resolve`, `subkeys`, and `LogicalError`
+  (Format / Unsupported / NotFound). `create_key` walks the path, creating
+  each missing component: alloc a child nk (parent set, KEY_COMP_NAME for
+  ASCII names, security_offset), add its sk, insert it name-sorted into the
+  parent's lh, bump the parent's `subkey_count` / `subkeys_list_offset`.
+- `logical/key.rs`: nk read/write over the image, `build_child_nk`, name
+  encoding (ASCII+KEY_COMP_NAME else UTF-16LE) and decode, case-insensitive
+  ordering (`cmp_name` / `name_eq`, ASCII upcasing).
+- `logical/index.rs`: `insert_subkey` keeps the parent's lh name-sorted
+  (invariant 17), reallocating the list cell and freeing the old one; errors
+  before lh -> ri promotion (step 8) rather than emit a leaf offreg rejects.
+  `list_entries` reads `(offset, name)` per subkey.
+- `logical/security.rs`: `add_sk` allocates a new sk with the ratified
+  default descriptor and splices it into the root's sk ring, refcount 1.
+
+Security note: each created key gets its OWN sk (the ratified created-key
+default), distinct from the empty-hive root's placeholder SD, so a single
+key create yields a 2+ element sk ring. sk dedup/sharing (one sk, summed
+refcount) is step 10. The root SD remains the open step-3 placeholder
+(spec question 2); this session does not touch it.
+
+## Layer 1: the allocator (prior session)
+
+`src/alloc/` is the deterministic cell allocator over the hive bins data.
+It owns free space and hbin boundaries but does not interpret cell contents
+(CLAUDE.md Layer 1). Policy is first-fit by lowest offset, which keeps byte
+output reproducible (Hard Rule 5).
+
+- `alloc/mod.rs`: `HiveImage` wraps the bins data (`Vec<u8>`, no base
+  block). `new_empty()` (one 4096 bin), `from_bins()`, `alloc(payload_len)
+  -> offset` (zeroes content, grows a new hbin if nothing fits),
+  `free(offset)`, `content`/`content_mut`, `bins`/`bins_size`, and
+  `to_hive_file(root_offset, stamp)` which prepends a `BaseBlock::create`
+  base block. Offsets point at the cell size field, matching on-disk links.
+- `alloc/free_list.rs`: implicit free list (positive-size cells are free, so
+  no separate boxed structure, Hard Rule 2). `find_free` (deterministic
+  first-fit), `place` (split when the leftover is a whole cell, else take
+  the whole cell; requests and free cells are both 8-multiples so a split
+  never leaves a sub-8 fragment), `free` (forward + backward coalescing,
+  never across an hbin boundary, invariant 10).
+- `alloc/hbin_grow.rs`: `grow_for` appends a new 4096-aligned hbin with a
 
 ## Layer 1: the allocator (this session)
 
@@ -157,7 +210,11 @@ a Layer 2 (logical) concern. These are pure parsers/serializers, fully
 verifiable offline; they do NOT yet decide which list type a create emits
 (that is the step 4 logical decision, harness-gated).
 
-Tests (all 64 lib + 2 corpus green, `cargo test`, clippy clean, fmt clean):
+Tests (all 72 lib + 2 corpus green, `cargo test`, clippy clean; new files
+fmt clean. NOTE: pre-existing fmt drift exists in several `format/*.rs` and
+`tests/hbin_walk_corpus.rs` from earlier merges; left untouched per the
+"fmt what you touch" convention, so a repo-wide `cargo fmt --check` still
+reports diffs there. Worth a separate fmt-only cleanup PR.):
 
 - `src/format/base_block.rs` unit tests: `parses_known_fields`,
   `round_trip_is_byte_exact`, `rejects_short_buffer`,
@@ -212,6 +269,15 @@ Tests (all 64 lib + 2 corpus green, `cargo test`, clippy clean, fmt clean):
   alloc/free ops via SplitMix64; after each op `walk` stays green and every
   live cell's tag byte survives, so an overlapping or corrupting allocation
   is caught, not just an invariant-9 tiling break).
+- `src/logical/mod.rs`: `create_single_key_under_root` (root count/list,
+  one-element lh, child fields), `child_carries_the_ratified_default_security`
+  (sk descriptor == ratified default, refcount 1, 2-element ring with
+  consistent flink/blink), `nested_path_creates_intermediates`,
+  `siblings_are_kept_name_sorted`, `create_is_idempotent`,
+  `lookup_is_case_insensitive`, `deterministic_same_sequence_same_bytes`
+  (Hard Rule 5), and `tree_invariant_holds_over_random_creates` (120 random
+  creates against a model: every node enumerates exactly its children,
+  name-sorted; walk green after each op; loadable file).
 
 ## CAVEAT: step 3 is implemented but NOT verified (read before trusting)
 
@@ -238,13 +304,21 @@ harness reports the Windows agent loading a libreg empty hive cleanly.
 
 ## What is half-done / not started
 
-- Step 4 (single key create): Layer 0 blocks (lf/lh), the created-key SD,
-  and the Layer 1 allocator now all exist. What is missing is the Layer 2
-  glue that uses them and harness verification. See next-session plan.
-- Layer 2 (logical) not started: no `logical/` module yet. This is the
-  next layer; the allocator gives it a substrate to build on.
-- Steps 5-11 not started. li/ri/db/vk format modules not written yet
-  (li/ri belong to step 8, vk to step 5, db to step 9).
+- Step 4 (single key create) IMPLEMENTED in Layer 2 and offline-validated;
+  not CLOSED until the harness reports `semantic` green (needs the
+  Windows agent / harness, not in this worktree).
+- Step 5 (values) not started: no vk format module, no value ops in
+  logical. This is the next step.
+- lh -> ri promotion (step 8) not done: `insert_subkey` errors past
+  LH_MAX_ENTRIES (1013) instead of promoting. Fine until a key has that
+  many subkeys.
+- sk dedup/sharing (step 10) not done: every created key adds its own sk,
+  so identical descriptors are not yet collapsed to one shared cell with a
+  summed refcount. Refcounts are still exact (each sk has its one referrer),
+  so invariant 14 holds; the hive just has more sk cells than offreg would.
+- No key deletion yet (step 7); the allocator's `free`/coalesce is ready
+  for it, but no logical delete path frees an nk/list/sk subtree.
+- Steps 6-11 otherwise not started. li/ri/db/vk format modules not written.
 - Allocator is a content-agnostic substrate only: it does not update nk
   link fields, refcounts, or counts. That bookkeeping is Layer 2's job.
 - Allocator does not yet free into a size-bucketed list; first-fit scans
@@ -307,32 +381,25 @@ harness reports the Windows agent loading a libreg empty hive cleanly.
 
 ## What I would do next session
 
-1. VERIFY step 3 against offreg via the harness/Windows agent before
-   moving on (coordinate; resolve spec question 2). Adjust the SD / root
-   name / version to whatever offreg accepts. Only then is step 3 green.
-2. Step 4: single key create, now UNBLOCKED (spec questions 3 and 4
-   answered) and with all substrates in place (lf/lh, created-key SD,
-   allocator). Start Layer 2 (`logical/`): a thin key-create that, given a
-   `HiveImage`, (a) allocs a child nk and writes its fields (parent = root
-   offset, KEY_COMP_NAME for an ASCII name, last_written, security_offset),
-   (b) allocs a one-element lh pointing at the child (lh per the spec's
-   bytewise guidance; semantic does not care), (c) updates the root nk's
-   `subkeys_list_offset` and `subkey_count`, (d) handles the child's
-   security (share the parent sk with a refcount bump if descriptors match,
-   else add an sk to the ring). Note the empty-hive root currently carries
-   the placeholder SD, not the ratified created-key default, so for a child
-   under it the descriptors differ; reconcile this with spec question 2
-   (root SD still open) before deciding share-vs-add. Keep Layer 2 calling
-   DOWN into alloc/format only (layered discipline).
-   Test offline with structural validation (parse + walk + root has the
-   child, child well-formed, sk ring/refcounts consistent), then get the
-   harness to confirm `semantic` green. Coordinate with the harness agent
-   (shared Windows VM); CLAUDE.md wants an artifact for them after step 4.
-   The `alloc::HiveImage` plus `to_hive_file` is exactly that artifact path.
-3. Obtain a corpus hive (even one small NTUSER.DAT) so the step 1 and 2
-   corpus tests run for real, not just SKIP. An offreg-created empty hive
-   in the corpus would also answer spec question 2 directly. Record
-   `<hive>.cellcount` from an offreg dump for the step 2 count check.
-4. Consider adding `proptest` as a dev-dependency once dependency policy
-   for the corpus/offline build is confirmed; replace the hand-rolled LCG
-   property test if so.
+1. GET THE HARNESS to drive `Hive` and confirm step 4 `semantic` green
+   (and step 3 while at it). The artifact path is: build a `Hive`, create
+   keys, call `to_file()`, hand the bytes to the Windows agent via offreg.
+   Coordinate with the harness/linux-agent developers on wiring `Hive` into
+   `agents/linux` (their subtree, not ours): they need `create_key` and a
+   dump/enumerate path. Only after `semantic` is green is step 4 CLOSED.
+   This also surfaces whether the child's ratified SD and the root's
+   placeholder SD survive offreg (spec question 2).
+2. Step 5: value set (all REG_* types). Needs a new `format/vk.rs` (value
+   cell) plus a value-list cell (raw u32 offset array) and data cells
+   (inline for <= 4 bytes, plain data cell otherwise, db deferred to step
+   9). Then `logical/value.rs`: set/get/delete wiring the parent nk's
+   `value_count` / `values_list_offset`. Follow the lf/lh + index.rs shape.
+3. Reconcile the root SD (spec question 2) once a corpus/offreg reference
+   exists: if offreg gives the root the ratified created-key default, switch
+   `empty_hive.rs` to it; then a child under root could SHARE the root sk
+   (step 10 dedup) rather than add its own. Today they differ on purpose.
+4. Obtain a corpus hive so the step 1/2 corpus tests run for real (not
+   SKIP) and to answer spec question 2 directly.
+5. A small fmt-only PR to clear the pre-existing `cargo fmt` drift in
+   `format/*.rs` and `tests/hbin_walk_corpus.rs` (left untouched here per
+   "fmt what you touch"), so repo-wide `cargo fmt --check` is clean.
