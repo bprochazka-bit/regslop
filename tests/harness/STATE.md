@@ -2,6 +2,23 @@
 
 Last updated: 2026-05-31
 
+## CONTRACTS 0.1.3 to 0.1.6 (latest session)
+
+The harness needs NO code change for these: 0.1.3 (default SDDL) is already
+asserted by the existing O/G/D SDDL normalization; 0.1.4 (`BAD_REQUEST`) is just
+another error-code string the differ compares verbatim; 0.1.5 (`/key/create`)
+and 0.1.6 (GET-body transport) are documented existing behavior with no wire
+change. The Linux agent gained `BAD_REQUEST` conformance this session. Re-ran
+the live VM differential: GREEN.
+
+Possible future harness test: a malformed-request negative test asserting
+`BAD_REQUEST`. Held back because the Windows agent has not adopted 0.1.4 yet, so
+a cross-agent version would diverge (linux=BAD_REQUEST vs windows=INTERNAL).
+Add it once the Windows agent conforms.
+
+Recovery tag: ADR 0004 now proposes the crash-injection control surface that was
+the blocker. Still not implemented; this is the next substantial harness effort.
+
 ## First live VM differential run (2026-05-31)
 
 Ran the harness against the real Windows agent (offreg-10.0.22621) on the shared

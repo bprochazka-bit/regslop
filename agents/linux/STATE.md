@@ -2,6 +2,30 @@
 
 Last updated: 2026-05-31
 
+## CONTRACTS 0.1.3 to 0.1.6 conformance (latest session)
+
+Caught up after several spec PRs merged while this subtree sat at 0.1.2.
+
+- **0.1.4 `BAD_REQUEST`** (new code). The agent now returns it for a malformed
+  request: invalid JSON, a missing or wrong-typed required field, an unknown
+  endpoint, an unknown value-type constant, and a leading-separator path. Done
+  mostly by pointing the existing `AgentError::bad_request` helper at the new
+  `Code::BadRequest` (was `Code::Internal`); plus the invalid-JSON path in
+  `main.rs` and the unknown-value-type path in `backend.rs` (was
+  `TYPE_MISMATCH`). `TYPE_MISMATCH` is now strictly a well-formed value whose
+  data does not fit the declared type. 7 new unit tests. NOTE: the Windows agent
+  still returns `INTERNAL`/`TYPE_MISMATCH` for these; their conformance is
+  pending (no differential test exercises it yet, so the VM run stays green).
+- **0.1.3 default security descriptor**: ratified value matches the agent's
+  `DEFAULT_SDDL` already (set last session); no change. Issue #11 closed.
+- **0.1.5 `/key/create`** intermediate-key semantics and **0.1.6** GET-body
+  read transport: both document existing agent behavior; no change, confirmed
+  green on the VM.
+- Re-ran the live VM differential: GREEN (semantic 11/11, structural 4/4,
+  bytewise 2/2 warnings, roundtrip 7/7).
+
+All of `agents/linux/spec-questions.md` is now resolved through 0.1.6.
+
 ## First live VM differential run (2026-05-31)
 
 Validated against the real offreg oracle on the VM. Two Linux-agent fixes the

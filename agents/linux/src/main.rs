@@ -117,7 +117,7 @@ fn handle_request(backend: &dyn Backend, method: &str, path: &str, raw_body: &st
                     json!({
                         "ok": false,
                         "error": format!("invalid JSON body: {e}"),
-                        "code": "INTERNAL",
+                        "code": "BAD_REQUEST",
                         "data": J::Null,
                     }),
                 );
