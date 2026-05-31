@@ -2,20 +2,27 @@
 
 Last updated: 2026-05-31 (library agent)
 
-Merge state: steps 1-5 plus the offreg-alignment pass are on main (allocator
-#27, key create #33, value set #37, offreg-align #41, all MERGED). THIS
-session (branch `agent/library-enum` off main) implements step 6: reading
-subkey lists of every on-disk form (lf/lh/li/ri), verified against the offreg
-reference hives. PR targets main.
+Merge state: steps 1-6 plus the offreg-alignment pass are on main (allocator
+#27, key create #33, value set #37, offreg-align #41, step 6 read #44, all
+MERGED). THIS session (branch `agent/library-ri-promote` off main) implements
+step 8: ri promotion on WRITE, so libreg can create keys with more than 507
+subkeys. This unblocks harness issue #40 (un-skip invariant 11). PR -> main.
 
-STEP 6 (this session): added Layer 0 `format/li.rs` (IndexLeaf) and
-`format/ri.rs` (IndexRoot), and made `logical::index::list_entries` dispatch
-on the cell signature so it enumerates lf, lh, li, and an ri index of leaves
-(descending one level; ri never points at ri). `tests/enumerate_corpus.rs`
-loads ref_ri.hiv (1100 keys as an ri of three lh leaves [507, 507, 86]) and
-checks all names come back sorted (k00000..k01099) and resolve across leaf
-boundaries. libreg can now READ real hives with any subkey-list form. Create
-still WRITES lh only (<=507); ri promotion on write is step 8.
+STEP 8 (this session): `logical::index::insert_subkey` now rebuilds the
+subkey index from the full sorted entry set on each insert, emitting a single
+lh leaf for <= 507 entries and an `ri` of lh leaves (each <= 507, in order)
+beyond that. For keys added in sorted order this partitions leaves exactly as
+offreg does. `tests/promote_ri.rs`: 507 keys stay one lh leaf; 508 promote to
+ri [507, 1]; 1100 produce ri [507, 507, 86] matching ref_ri.hiv (same leaf
+sizes AND same enumerated subkeys), and the result walks/reloads cleanly;
+creation is byte-deterministic. The read path (step 6) reads it all back.
+Step 6 just merged (#44); both the read and write sides of wide keys now work.
+
+PERF/NOTE: the rebuild is O(n) per insert (O(n^2) to build n subkeys),
+because each insert re-reads every sibling's name (leaves store hashes, not
+names) and re-lays the whole index. Correct and deterministic, and matches
+offreg's leaf partition for sorted input, but a future optimization could
+split leaves incrementally. The 1100-key test takes ~3s in debug.
 
 ----- earlier sessions below -----
 
@@ -108,10 +115,10 @@ subkey enumeration.
 - `logical/key.rs`: nk read/write over the image, `build_child_nk`, name
   encoding (ASCII+KEY_COMP_NAME else UTF-16LE) and decode, case-insensitive
   ordering (`cmp_name` / `name_eq`, ASCII upcasing).
-- `logical/index.rs`: `insert_subkey` keeps the parent's lh name-sorted
-  (invariant 17), reallocating the list cell and freeing the old one; errors
-  before lh -> ri promotion (step 8) rather than emit a leaf offreg rejects.
-  `list_entries` reads `(offset, name)` per subkey.
+- `logical/index.rs`: `insert_subkey` keeps the subkey list name-sorted
+  (invariant 17) and promotes lh -> ri of lh leaves past 507 (step 8, rebuilds
+  the index each insert). `list_entries` reads `(offset, name)` per subkey
+  across all forms (lf/lh/li/ri).
 - `logical/security.rs`: `add_sk` allocates a new sk with the ratified
   default descriptor and splices it into the root's sk ring, refcount 1.
 
@@ -365,6 +372,10 @@ every `format/*.rs`; pass only the files you changed, or revert the rest.):
 - `tests/enumerate_corpus.rs` (step 6): `reads_ri_indexed_wide_key`
   (ref_ri.hiv, 1100 keys via an ri, sorted + boundary resolves) and
   `reads_lh_leaf_hives` (the single-leaf lh fixtures).
+- `tests/promote_ri.rs` (step 8): `stays_one_lh_leaf_at_507`,
+  `promotes_to_ri_at_508` ([507, 1]), `wide_key_matches_ref_ri` (1100 keys ->
+  ri [507, 507, 86], walks + reloads, same subkeys as ref_ri.hiv), and
+  `promotion_is_deterministic`.
 
 ## Step 3/4/5 verification against offreg references (this session)
 
@@ -407,23 +418,21 @@ now strong (byte-identical empty-hive prefix and descriptor, matching tree).
   (pairs with key delete, step 7). Big-data (db) values over 16344 bytes
   return Unsupported (step 9). All REG_* types work since data is opaque
   bytes + a type code; the agent maps JSON to bytes.
-- lh -> ri promotion (step 8) not done: `insert_subkey` errors past
-  LH_MAX_ENTRIES (507, the offreg cap) instead of promoting. Fine until a
-  key has more than 507 subkeys. ref_ri.hiv (1100 keys) needs this for read
-  (step 6) and write (step 8).
-- sk dedup/sharing (the create-side of step 10) DONE this session:
+- Step 6 (read lf/lh/li/ri) and step 8 (ri promotion on write) BOTH DONE.
+  `insert_subkey` rebuilds the index, emitting lh up to 507 then an ri of lh
+  leaves; verified against ref_ri.hiv. Because it rebuilds via `list_entries`
+  (which reads any form), inserting into a LOADED li/ri/lf hive now works too
+  (it comes back out as lh/ri). Only lf/li are never WRITTEN (offreg uses lh).
+- sk dedup/sharing (the create-side of step 10) DONE:
   `security::ensure_sk` reuses a descriptor-equal sk and bumps its refcount,
   matching offreg (ref_multi.hiv: refcount 7 for 6 children). NOT done: the
   refcount DECREMENT and orphan-free on key delete (pairs with step 7).
-- No key deletion yet (step 7); the allocator's `free`/coalesce is ready
-  for it, but no logical delete path frees an nk/list/sk subtree.
-- Step 6 (subkey enumeration, READ side) DONE this session: lf/lh/li/ri all
-  enumerate, verified against ref_ri.hiv. The WRITE side of wide keys (ri
-  promotion past 507) is step 8, still TODO (issue #40 waits on it).
-- Steps 7-11 not started. db format module not written (lf/lh/li/ri/vk all
-  exist now). insert_subkey still parses the existing list as lh only, so
-  inserting into a LOADED li/ri/lf hive errors; fine until step 8 generalizes
-  the write path.
+- No key/value deletion yet (step 7); the allocator's `free`/coalesce is ready
+  for it, but no logical delete path frees an nk/list/sk subtree or decrements
+  an sk refcount. This is the main remaining gap before the library is
+  round-trip complete for create/delete workloads.
+- db format module (step 9) not written; values over 16344 bytes return
+  Unsupported. All other cell types (nk/vk/sk/lf/lh/li/ri) exist.
 - Allocator is a content-agnostic substrate only: it does not update nk
   link fields, refcounts, or counts. That bookkeeping is Layer 2's job.
 - Allocator does not yet free into a size-bucketed list; first-fit scans
@@ -492,19 +501,14 @@ now strong (byte-identical empty-hive prefix and descriptor, matching tree).
    on wiring `Hive` into `agents/linux` (their subtree). The offline evidence
    is now strong (byte-identical empty-hive prefix + descriptor, matching
    tree vs the offreg references), so this should pass.
-2. Step 6 (subkey enumeration, READ) DONE this session (format/li.rs +
-   ri.rs + dispatch in index::list_entries, verified against ref_ri.hiv).
-3. Step 8 (ri promotion on WRITE) is the highest-leverage next step because
-   the harness is waiting on it (issue #40: un-skip invariant 11 once libreg
-   writes wide keys). Generalize `insert_subkey`: when an lh leaf would
-   exceed 507, promote to an `ri` of lh leaves; route inserts to the right
-   leaf, keeping global name order; split further leaves at 507. Verify by
-   creating 1100 keys and diffing the structure against ref_ri.hiv (the
-   read path from this session reads it back). The IndexRoot/IndexLeaf
-   serializers already exist.
-4. Step 7 (key/value delete + free list): the allocator's free/coalesce is
-   ready; add a logical delete that frees the nk, its subkey/value lists, and
-   decrements the sk refcount (free the sk at 0). Value delete too.
+2. Steps 6 (read) and 8 (ri promotion on write) DONE; tell the harness
+   (issue #40) it can un-skip invariant 11 now that libreg writes wide keys.
+3. Step 7 (key/value delete + free list) is the main remaining gap: a logical
+   delete that frees the nk, its subkey/value lists (and ri leaves), the
+   value-data cells, and DECREMENTS the shared sk refcount (freeing the sk at
+   0). The allocator's free/coalesce is ready; this makes create/delete
+   round-trip. Test: create then delete; resulting hive has no orphan cells
+   and validates (walk green, no dangling offsets).
 4. Bytewise parity polish (lower priority, all bytewise-only): match offreg's
    allocation order (lh before child nk), the non-ASCII lh hash (full Unicode
    upcase, issue #22). The `dump_hive`/`make_key_hive` examples make this easy
