@@ -12,6 +12,7 @@ pub mod hbin;
 pub mod lf;
 pub mod lh;
 pub mod nk;
+pub mod security_descriptor;
 pub mod sk;
 
 /// Errors raised while parsing or serializing on-disk structures.

@@ -106,15 +106,22 @@ impl SecurityCell {
     }
 }
 
-/// Build a minimal valid self-relative security descriptor.
+/// Build a minimal valid self-relative security descriptor for the
+/// empty-hive root key.
 ///
 /// Owner and group are set to the Local System SID (S-1-5-18); no SACL is
 /// present and the DACL is NULL (no SE_DACL_PRESENT control bit), which
 /// grants unrestricted access. This is a placeholder default. The exact
-/// descriptor offreg writes for a freshly created hive has NOT been
-/// confirmed; see libreg/STATE.md (spec question) before relying on byte
-/// equality. The empty-hive builder accepts any descriptor, so the agent
-/// or harness can substitute the offreg-correct one.
+/// descriptor offreg writes for the ROOT of a freshly created hive has NOT
+/// been confirmed; see libreg/STATE.md (spec question) before relying on
+/// byte equality. The empty-hive builder accepts any descriptor, so the
+/// agent or harness can substitute the offreg-correct one.
+///
+/// This is distinct from the default a freshly created (non-root) KEY
+/// carries, which CONTRACTS 0.1.6 ratified: see
+/// [`super::security_descriptor::default_key_security_descriptor`]. That
+/// descriptor is not used here, because whether offreg gives the hive root
+/// the same descriptor as an ordinary created key is unconfirmed.
 pub fn default_security_descriptor() -> Vec<u8> {
     // SECURITY_DESCRIPTOR_RELATIVE header is 20 bytes; two 12-byte SIDs
     // follow it (owner at 0x14, group at 0x20).
