@@ -1,0 +1,27 @@
+[package]
+name = "winreg-agent"
+version = "0.1.0"
+edition = "2021"
+description = "HTTP agent wrapping offreg.dll, the ground-truth oracle for libreg differential testing"
+publish = false
+
+# This crate only ever runs on Windows (offreg.dll is Windows-only), but it is
+# cross-compiled from Linux with the x86_64-pc-windows-gnu target. We do not
+# depend on the heavy `windows` crate: kernel32/advapi32 are linked through
+# mingw import libraries via explicit `extern` blocks, and offreg.dll is loaded
+# dynamically at runtime (no offreg.lib is available on the build host).
+
+[[bin]]
+name = "winreg-agent"
+path = "src/main.rs"
+
+[dependencies]
+tiny_http = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+sha2 = "0.10"
+
+[profile.release]
+opt-level = 2
+panic = "unwind"
