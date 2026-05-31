@@ -13,7 +13,8 @@
 pub const BASE_BLOCK_LEN: usize = 4096;
 pub const HBIN_HEADER_LEN: usize = 32;
 
-fn u32_at(b: &[u8], off: usize) -> u32 {
+/// Little-endian u32 at byte offset `off`.
+pub fn u32_at(b: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
 }
 

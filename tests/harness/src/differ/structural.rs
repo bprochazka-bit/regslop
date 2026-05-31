@@ -9,16 +9,18 @@
 //!   emit a real `regf` file and exposes no raw bytes.
 //! - `check_bytes(bytes)` runs against a real hive file's bytes (the corpus).
 //!   It evaluates the base-block and hbin/cell invariants 1 to 6, 9, 10, plus
-//!   11 (subkey-list cells) and 16 (key-name encoding) by scanning cells by
-//!   signature, via `super::regf`. The invariants that need a logical-tree walk
-//!   (7, 8, 12 to 15) stay `Skipped`; 17 and 18 need the dump/validate and so
-//!   belong to `check()`.
+//!   the ones reachable from a cell scan: 11 (subkey-list cells), 13 and 14 (sk
+//!   doubly linked list and refcounts), and 16 (key-name encoding), via
+//!   `super::regf`. The invariants that need a full logical-tree walk (7, 8,
+//!   12, 15) stay `Skipped`; 17 and 18 need the dump/validate and so belong to
+//!   `check()`.
 //!
 //! Everything not evaluated reports `Skipped` with a reason, which the report
 //! surfaces honestly rather than silently counting as a pass.
 
 use super::regf;
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
@@ -157,6 +159,88 @@ fn check_subkey_lists(bytes: &[u8], w: &regf::Walk) -> Status {
     from_violations(&viol)
 }
 
+/// Bin-relative offset of a cell (the offset stored in flink/blink/security
+/// pointers): the file offset of its 4-byte size field, minus the base block.
+fn cell_offset(c: &regf::Cell) -> usize {
+    (c.content_start - 4) - regf::BASE_BLOCK_LEN
+}
+
+fn cell_sig<'a>(bytes: &'a [u8], c: &regf::Cell) -> &'a [u8] {
+    if c.content_len >= 2 {
+        &bytes[c.content_start..c.content_start + 2]
+    } else {
+        &[]
+    }
+}
+
+/// Invariants 13 and 14: the `sk` (security) cells form a consistent doubly
+/// linked list (13), and reference counts are accurate (14). Checkable from a
+/// cell scan: locate every `sk` by its bin-relative offset, verify each
+/// flink/blink points at an `sk` that links back, verify no refcount is 0, that
+/// every `nk`'s security pointer lands on an `sk`, and that the refcounts sum to
+/// the number of `nk` cells (each key references exactly one descriptor).
+/// `ref_multi.hiv` pins the shared case: 7 nk, one sk, refcount 7.
+fn check_security_cells(bytes: &[u8], w: &regf::Walk) -> (Status, Status) {
+    let sk_by_off: HashMap<usize, &regf::Cell> = w
+        .cells
+        .iter()
+        .filter(|c| c.allocated && c.content_len >= 20 && cell_sig(bytes, c) == b"sk")
+        .map(|c| (cell_offset(c), c))
+        .collect();
+
+    let mut inv13 = Vec::new();
+    for (&off, c) in &sk_by_off {
+        let flink = regf::u32_at(bytes, c.content_start + 4) as usize;
+        let blink = regf::u32_at(bytes, c.content_start + 8) as usize;
+        match sk_by_off.get(&flink) {
+            Some(fc) => {
+                let fblink = regf::u32_at(bytes, fc.content_start + 8) as usize;
+                if fblink != off {
+                    inv13.push(format!(
+                        "sk at {off:#x}: flink {flink:#x} does not link back (its blink is {fblink:#x})"
+                    ));
+                }
+            }
+            None => inv13.push(format!("sk at {off:#x}: flink {flink:#x} is not an sk cell")),
+        }
+        if !sk_by_off.contains_key(&blink) {
+            inv13.push(format!("sk at {off:#x}: blink {blink:#x} is not an sk cell"));
+        }
+    }
+
+    let mut inv14 = Vec::new();
+    let mut refcount_sum: u64 = 0;
+    for (&off, c) in &sk_by_off {
+        let rc = regf::u32_at(bytes, c.content_start + 12);
+        if rc == 0 {
+            inv14.push(format!("sk at {off:#x}: reference count is 0 (orphan)"));
+        }
+        refcount_sum += rc as u64;
+    }
+    let mut nk_count: u64 = 0;
+    for c in w.cells.iter().filter(|c| c.allocated && c.content_len >= 76 && cell_sig(bytes, c) == b"nk") {
+        nk_count += 1;
+        let sec = regf::u32_at(bytes, c.content_start + 44) as usize;
+        if !sk_by_off.contains_key(&sec) {
+            inv14.push(format!(
+                "nk at {:#x}: security pointer {sec:#x} is not an sk cell (dangling)",
+                cell_offset(c)
+            ));
+        }
+    }
+    if refcount_sum != nk_count {
+        inv14.push(format!(
+            "sk reference counts sum to {refcount_sum}, but there are {nk_count} nk cells"
+        ));
+    }
+
+    if sk_by_off.is_empty() {
+        let s = Status::Skipped("no sk cells present".to_string());
+        return (s.clone(), s);
+    }
+    (from_violations(&inv13), from_violations(&inv14))
+}
+
 fn from_violations(v: &[String]) -> Status {
     if v.is_empty() {
         Status::Pass
@@ -167,10 +251,10 @@ fn from_violations(v: &[String]) -> Status {
 
 /// Run the byte-level structural invariants against a real hive file's bytes
 /// (a corpus hive). Implements invariants 1 to 6, 9, and 10 from the base block
-/// and the hbin/cell walk, plus 11 (subkey-list cells) and 16 (key-name
-/// encoding) from a cell scan. The invariants that need a full logical-tree
-/// walk (7, 8, 12 to 15) stay Skipped, and 17/18 need the canonical dump and the
-/// agent validate verdict; use `check()` for those.
+/// and the hbin/cell walk, plus 11 (subkey-list cells), 13 and 14 (sk list and
+/// refcounts), and 16 (key-name encoding) from a cell scan. The invariants that
+/// need a full logical-tree walk (7, 8, 12, 15) stay Skipped, and 17/18 need the
+/// canonical dump and the agent validate verdict; use `check()` for those.
 pub fn check_bytes(bytes: &[u8]) -> Vec<InvariantResult> {
     let mut out = Vec::new();
     let bb = regf::parse_base_block(bytes);
@@ -245,14 +329,15 @@ pub fn check_bytes(bytes: &[u8]) -> Vec<InvariantResult> {
     // without building the logical tree.
     out.push(result(11, "subkey list cell type promotion lf/lh/ri", check_subkey_lists(bytes, &w)));
     out.push(result(16, "key names UTF-16LE, or Latin-1 when KEY_COMP_NAME (0x0020) is set", check_key_names(bytes, &w)));
+    let (inv13, inv14) = check_security_cells(bytes, &w);
+    out.push(result(13, "security cells doubly linked with refcounts", inv13));
+    out.push(result(14, "sk refcounts accurate", inv14));
 
     let needs_logical = "requires a logical-tree parse (not implemented for static byte checks)";
     for (id, name) in [
         (7, "allocated cells form a tree from root"),
         (8, "free cells tracked in free list"),
         (12, "big-data cells only above 16344 bytes"),
-        (13, "security cells doubly linked with refcounts"),
-        (14, "sk refcounts accurate"),
         (15, "class name strings are UTF-16LE"),
     ] {
         out.push(result(id, name, Status::Skipped(needs_logical.into())));
@@ -360,6 +445,34 @@ mod tests {
         // ref_wide.hiv has an uncompressed UTF-16LE subkey name (Omega + mega).
         let r = check_bytes(&corpus("ref_wide.hiv"));
         assert_eq!(inv(&r, 16), &Status::Pass, "{:?}", inv(&r, 16));
+    }
+
+    #[test]
+    fn security_cells_pass_invariants_13_and_14() {
+        // ref_multi shares one sk across 7 nk cells (refcount 7). The doubly
+        // linked list (single self-referential sk) and refcount sum must hold.
+        let r = check_bytes(&corpus("ref_multi.hiv"));
+        assert_eq!(inv(&r, 13), &Status::Pass, "{:?}", inv(&r, 13));
+        assert_eq!(inv(&r, 14), &Status::Pass, "{:?}", inv(&r, 14));
+    }
+
+    #[test]
+    fn bumping_an_sk_refcount_fails_invariant_14() {
+        // Inflate the shared sk's refcount so it no longer equals the nk count.
+        let mut bytes = corpus("ref_multi.hiv");
+        let w = regf::walk_hbins(&bytes);
+        let sk = w
+            .cells
+            .iter()
+            .find(|c| c.allocated && c.content_len >= 20 && &bytes[c.content_start..c.content_start + 2] == b"sk")
+            .expect("an sk cell");
+        let rc_off = sk.content_start + 12;
+        let bumped = regf::u32_at(&bytes, rc_off) + 1;
+        bytes[rc_off..rc_off + 4].copy_from_slice(&bumped.to_le_bytes());
+        let r = check_bytes(&bytes);
+        assert!(matches!(inv(&r, 14), Status::Fail(_)), "{:?}", inv(&r, 14));
+        // The link structure is untouched, so inv13 still holds.
+        assert_eq!(inv(&r, 13), &Status::Pass, "{:?}", inv(&r, 13));
     }
 
     #[test]
