@@ -219,6 +219,17 @@ fn run_sequence(client: &Client, test: &TestDef) -> SeqResult {
         let mut body = build_body(opmap);
         substitute(&mut body, &vars);
 
+        // Hive file paths in tests are logical; map them onto this agent's
+        // filesystem (a Linux `/tmp/x.hiv` is not a valid offreg path). The
+        // mapping is deterministic, so a later hive_load of the same logical
+        // path resolves to the same file on this agent.
+        if matches!(op_name.as_str(), "hive_create" | "hive_load") {
+            if let Some(p) = body.get("path").and_then(|p| p.as_str()) {
+                let mapped = client.map_hive_path(p);
+                body["path"] = json!(mapped);
+            }
+        }
+
         // Snapshot a hive immediately before it is closed, so post-save state
         // is captured even when the test closes the handle.
         if op_name == "hive_close" {
