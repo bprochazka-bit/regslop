@@ -2,6 +2,32 @@
 
 Last updated: 2026-05-31
 
+## First live VM differential run (2026-05-31)
+
+Ran the harness against the real Windows agent (offreg-10.0.22621) on the shared
+VM (`vmreg.lan:7879`), not the stand-in. **Result: GREEN, semantic 11/11**,
+structural 4/4, bytewise 2/2 (warnings = allocator divergence, expected),
+roundtrip 7/7. Three findings, in the order they were peeled back:
+
+1. **Harness bug, fixed: hive paths are per-agent filesystem paths.** Tests use
+   `/tmp/libreg_*.hiv`, which offreg cannot create (win32 error 3). The harness
+   now maps a logical hive path onto each agent's hive dir (`Client::map_hive_path`),
+   keyed off the agent's reported `agent` field so a Linux stand-in still gets
+   `/tmp`. New flags `--linux-hive-dir` (default `/tmp`) and `--windows-hive-dir`
+   (default `C:\Windows\Temp`). This was masking every other result.
+2. **Linux agent bug, fixed: REG_QWORD encoding.** The Linux agent emitted a
+   sub-2^53 QWORD as a string; CONTRACTS says integer (string only above 2^53).
+   Fixed in the Linux agent to mirror the Windows `v > (1<<53)` rule.
+3. **Default security descriptor, matched to oracle.** The Linux placeholder
+   default (2 ACEs) diverged from offreg's real default (4 ACEs). Set the Linux
+   `DEFAULT_SDDL` to the observed oracle default; recorded for spec ratification
+   in `agents/linux/spec-questions.md` item 4.
+
+The remaining `semantic` WARNING (1) is the one-sided-SACL case firing for real
+on `key_rename`: offreg exposes a SACL on the renamed key that the Linux side
+does not, and ADR 0003 makes that a warning, not a failure. End-to-end proof
+that the SACL-asymmetry rule works against the live oracle.
+
 ## CONTRACTS 0.1.2 conformance (this session)
 
 - **SDDL comparison** (`src/differ/sddl.rs`, new): parses each side's SDDL into a

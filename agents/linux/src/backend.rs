@@ -147,6 +147,31 @@ fn validate_value(vtype: &str, data: &serde_json::Value) -> Result<()> {
     }
 }
 
+/// Canonicalize value data into the representation the canonical form requires,
+/// so two agents given equivalent input emit byte-identical JSON. Only
+/// REG_QWORD needs it today: CONTRACTS encodes a QWORD as an integer and only
+/// switches to a string above 2^53 (where f64-based JSON parsers lose
+/// precision), regardless of whether the caller sent a number or a numeric
+/// string. The threshold mirrors the Windows agent (`v > (1u64 << 53)`).
+fn canonicalize_value(vtype: &str, data: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value as J;
+    if vtype == "REG_QWORD" {
+        let v = match data {
+            J::Number(n) => n.as_u64(),
+            J::String(s) => s.parse::<u64>().ok(),
+            _ => None,
+        };
+        if let Some(v) = v {
+            return if v > (1u64 << 53) {
+                J::String(v.to_string())
+            } else {
+                J::Number(serde_json::Number::from(v))
+            };
+        }
+    }
+    data.clone()
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
@@ -311,6 +336,7 @@ impl Backend for MemBackend {
         data: &serde_json::Value,
     ) -> Result<()> {
         validate_value(vtype, data)?;
+        let data = canonicalize_value(vtype, data);
         self.with_hive(handle, |hive| {
             let k = hive.root.get_mut(key)?;
             if let Some(existing) = k.find_value_mut(name) {
