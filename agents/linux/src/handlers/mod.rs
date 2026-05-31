@@ -13,12 +13,11 @@ use crate::backend::Backend;
 use crate::error::{AgentError, Result};
 use serde_json::Value as J;
 
-/// Dispatch a request to the right handler. Routing is on path only; the agent
-/// accepts a body on any method. CONTRACTS.md specifies GET for reads, but
-/// since bodies on GET are widely supported only at the transport layer, the
-/// agent does not reject a POST to a read path. The harness sends the
-/// contract method.
-pub fn dispatch(backend: &dyn Backend, path: &str, body: &J) -> Result<J> {
+/// Dispatch a request to the right handler. Routing is on path for every
+/// endpoint except `/key/security`, where CONTRACTS 0.1.2 distinguishes read
+/// (GET) from write (POST) by HTTP method, not by the presence of the `sddl`
+/// field. The harness sends the contract method.
+pub fn dispatch(backend: &dyn Backend, method: &str, path: &str, body: &J) -> Result<J> {
     match path {
         "/version" => Ok(serde_json::json!({
             "agent": "linux",
@@ -41,7 +40,7 @@ pub fn dispatch(backend: &dyn Backend, path: &str, body: &J) -> Result<J> {
         "/value/delete" => value::delete(backend, body),
         "/value/get" => value::get(backend, body),
 
-        "/key/security" => security::dispatch(backend, body),
+        "/key/security" => security::dispatch(backend, method, body),
 
         "/hive/dump" => diag::dump(backend, body),
         "/hive/checksum" => diag::checksum(backend, body),

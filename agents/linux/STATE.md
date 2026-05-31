@@ -1,6 +1,24 @@
 # Linux Agent: STATE
 
-Last updated: 2026-05-30
+Last updated: 2026-05-31
+
+## CONTRACTS 0.1.2 conformance (this session)
+
+Brought the Linux agent up to CONTRACTS 0.1.2, mirroring the Windows agent
+(commit cf73eef):
+
+- `/key/security` now routes read vs write by HTTP method (GET reads, POST
+  writes and requires `sddl`), not by the presence of the `sddl` field. The
+  method is threaded `main.rs -> handlers::dispatch -> security::dispatch`.
+- Non-recursive delete of a key with subkeys returns the new `KEY_HAS_CHILDREN`
+  code (was `ACCESS_DENIED`). Added `Code::KeyHasChildren` to the closed set.
+- Canonical sort and `/key/list` order now use a case-insensitive Unicode
+  ordinal comparison (names uppercased), matching the Windows agent's
+  `to_uppercase()` comparator so the two outputs agree on ordering.
+- `protocol`/`format_version` stay at "0.1.0": the 0.1.1/0.1.2 changes were
+  additive clarifications plus one error code, not a wire-shape change, and the
+  Windows agent also reports "0.1.0". Bumping would have broken the
+  byte-for-byte canonical match.
 
 ## What is done
 
@@ -37,9 +55,10 @@ Last updated: 2026-05-30
 ## Assumptions I am relying on
 
 - Provisional semantics documented in `spec-questions.md` (intermediate-key
-  creation, ACCESS_DENIED for non-empty delete, INTERNAL for bad requests,
-  default SDDL, GET-with-body transport). The differ will flag any that
-  disagree with offreg once the Windows agent exists.
+  creation, INTERNAL for bad requests, default SDDL, GET-with-body transport).
+  The non-empty-delete code is now settled as `KEY_HAS_CHILDREN` per 0.1.2. The
+  differ will flag any remaining disagreement with offreg once both agents run
+  against the real Windows VM.
 - Deterministic fixed `last_write` (`2026-01-01T00:00:00Z`) so canonical output
   is reproducible; the harness ignores timestamps by default anyway.
 

@@ -87,11 +87,12 @@ fn worker_loop(server: Arc<tiny_http::Server>, backend: Arc<dyn Backend>) {
         // Path without query string.
         let url = req.url().to_string();
         let path = url.split('?').next().unwrap_or("").to_string();
+        let method = req.method().as_str().to_string();
 
         let mut raw = String::new();
         let _ = req.as_reader().read_to_string(&mut raw);
 
-        let (status, payload) = handle_request(backend.as_ref(), &path, &raw);
+        let (status, payload) = handle_request(backend.as_ref(), &method, &path, &raw);
         let data = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
         let header =
             tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
@@ -103,7 +104,7 @@ fn worker_loop(server: Arc<tiny_http::Server>, backend: Arc<dyn Backend>) {
 }
 
 /// Returns (http_status, envelope_json).
-fn handle_request(backend: &dyn Backend, path: &str, raw_body: &str) -> (u16, J) {
+fn handle_request(backend: &dyn Backend, method: &str, path: &str, raw_body: &str) -> (u16, J) {
     // Empty body is treated as an empty object so endpoints with no params work.
     let body: J = if raw_body.trim().is_empty() {
         json!({})
@@ -124,7 +125,7 @@ fn handle_request(backend: &dyn Backend, path: &str, raw_body: &str) -> (u16, J)
         }
     };
 
-    match handlers::dispatch(backend, path, &body) {
+    match handlers::dispatch(backend, method, path, &body) {
         Ok(data) => (200, json!({ "ok": true, "error": J::Null, "data": data })),
         Err(err) => {
             // Unknown endpoint is the one case we map to HTTP 404; everything

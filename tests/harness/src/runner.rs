@@ -384,12 +384,17 @@ fn compute_semantic(linux: &SeqResult, windows: Option<&SeqResult>, problems: &[
     let Some(w) = windows else { return AspectOutcome::Na };
     let opts = semantic::SemanticOptions::default();
     let mut diffs = Vec::new();
+    let mut warnings = Vec::new();
     let mut compared = 0;
     for (var, lsnap) in &linux.snapshots {
         if let Some(wsnap) = w.snapshots.get(var) {
             compared += 1;
-            for d in semantic::diff(&lsnap.dump, &wsnap.dump, &opts) {
+            let rep = semantic::compare(&lsnap.dump, &wsnap.dump, &opts);
+            for d in rep.diffs {
                 diffs.push(format!("hive '{var}' at {}: {}", d.path, d.detail));
+            }
+            for d in rep.warnings {
+                warnings.push(format!("hive '{var}' at {}: {}", d.path, d.detail));
             }
         }
     }
@@ -399,10 +404,12 @@ fn compute_semantic(linux: &SeqResult, windows: Option<&SeqResult>, problems: &[
     if !problems.is_empty() {
         return AspectOutcome::Fail(format!("operation divergence: {}", problems.join("; ")));
     }
-    if diffs.is_empty() {
-        AspectOutcome::Pass
-    } else {
+    if !diffs.is_empty() {
         AspectOutcome::Fail(diffs.join(" | "))
+    } else if !warnings.is_empty() {
+        AspectOutcome::Warn(warnings.join(" | "))
+    } else {
+        AspectOutcome::Pass
     }
 }
 

@@ -56,7 +56,7 @@ operations:
     handle: $h
     path: A
     recursive: false
-    expect_error: ACCESS_DENIED
+    expect_error: KEY_HAS_CHILDREN
   - op: key_delete
     handle: $h
     path: A

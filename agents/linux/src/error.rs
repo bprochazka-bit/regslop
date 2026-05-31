@@ -19,6 +19,11 @@ pub enum Code {
     ValueNotFound,
     TypeMismatch,
     AccessDenied,
+    // Non-recursive delete of a key that still has subkeys (CONTRACTS 0.1.2).
+    // Before 0.1.2 there was no dedicated code and this surfaced as
+    // ACCESS_DENIED; the Windows agent surfaced it as INTERNAL. Both now use
+    // this code so the harness sees a single, matching error on both sides.
+    KeyHasChildren,
     // Reserved for the transaction-log recovery path (recovery tag), not yet
     // reachable from the in-memory backend. Kept to keep the code set closed
     // and aligned with CONTRACTS.md.
@@ -38,6 +43,7 @@ impl Code {
             Code::ValueNotFound => "VALUE_NOT_FOUND",
             Code::TypeMismatch => "TYPE_MISMATCH",
             Code::AccessDenied => "ACCESS_DENIED",
+            Code::KeyHasChildren => "KEY_HAS_CHILDREN",
             Code::LogCorrupt => "LOG_CORRUPT",
             Code::Internal => "INTERNAL",
         }
@@ -63,6 +69,12 @@ impl AgentError {
     }
     pub fn key_exists(path: &str) -> Self {
         Self::new(Code::KeyExists, format!("key already exists: {path}"))
+    }
+    pub fn key_has_children(path: &str) -> Self {
+        Self::new(
+            Code::KeyHasChildren,
+            format!("key has subkeys, pass recursive=true to delete: {path}"),
+        )
     }
     pub fn value_not_found(name: &str) -> Self {
         Self::new(Code::ValueNotFound, format!("value not found: {name}"))

@@ -40,20 +40,20 @@ pub fn check(canonical: &Value, validate: &Value) -> Vec<InvariantResult> {
     vec![
         skip(1, "base block magic 'regf'"),
         skip(2, "primary sequence == secondary sequence"),
-        skip(3, "base block checksum matches"),
-        skip(4, "total size matches hbin total"),
+        skip(3, "base block checksum (XOR of first 127 dwords, 0/0xFFFFFFFF quirks) matches"),
+        skip(4, "hive bins data size (base block dword at offset 40) matches hbin total, excluding base block"),
         skip(5, "hbin magic and 4096 alignment"),
         skip(6, "cell size nonzero, sign marks allocation"),
         skip(7, "allocated cells form a tree from root"),
         skip(8, "free cells tracked in free list"),
-        skip(9, "sum of cell sizes == hbin size - header"),
+        skip(9, "sum of cell sizes == hbin size - 32-byte header"),
         skip(10, "no cell crosses an hbin boundary"),
         skip(11, "subkey list cell type promotion lf/lh/ri"),
         skip(12, "big-data cells only above 16344 bytes"),
         skip(13, "security cells doubly linked with refcounts"),
         skip(14, "sk refcounts accurate"),
         skip(15, "class name strings are UTF-16LE"),
-        skip(16, "key names UTF-16LE or Latin-1 per VALUE_COMP_NAME"),
+        skip(16, "key names UTF-16LE, or Latin-1 when KEY_COMP_NAME (0x0020) is set"),
         inv17_subkeys_sorted(root),
         inv18_logs(validate),
     ]
@@ -65,7 +65,8 @@ fn skip(id: u8, name: &'static str) -> InvariantResult {
 
 /// Invariant 17: subkey lists are sorted (binary search is valid). Observable
 /// from the canonical dump: every key's `subkeys` array must be in
-/// case-insensitive lexicographic order by name.
+/// case-insensitive Unicode ordinal order by name (names compared uppercased,
+/// per Windows semantics and the canonical sort rule in CONTRACTS 0.1.2).
 fn inv17_subkeys_sorted(root: Option<&Value>) -> InvariantResult {
     let mut violations = Vec::new();
     if let Some(root) = root {
@@ -92,7 +93,7 @@ fn walk_sorted(key: &Value, path: &str, violations: &mut Vec<String>) {
             .filter_map(|k| k.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
             .collect();
         let mut sorted = names.clone();
-        sorted.sort_by_key(|s| s.to_ascii_lowercase());
+        sorted.sort_by(|a, b| a.to_uppercase().cmp(&b.to_uppercase()));
         if names != sorted {
             violations.push(if path.is_empty() { "<root>".to_string() } else { path.to_string() });
         }

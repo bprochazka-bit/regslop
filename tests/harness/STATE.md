@@ -1,6 +1,30 @@
 # Harness: STATE
 
-Last updated: 2026-05-30
+Last updated: 2026-05-31
+
+## CONTRACTS 0.1.2 conformance (this session)
+
+- **SDDL comparison** (`src/differ/sddl.rs`, new): parses each side's SDDL into a
+  normalized descriptor and compares per ADR 0003: owner and group SIDs exact,
+  DACL as an ACE list in canonical category order (deny/allow/inherited) with
+  per-ACE token normalization, SACL only when both sides report one. A one-sided
+  SACL is a `semantic` WARNING, never a failure. Wired into `semantic.rs` (the
+  `sddl` field is intercepted, not string-compared). 9 unit tests.
+- **Semantic warnings channel**: `semantic::compare` now returns `{ diffs,
+  warnings }`; `compute_semantic` maps a warnings-only result to
+  `AspectOutcome::Warn` (passes, counted as a warning). `semantic::diff` kept as
+  a thin wrapper so existing tests/callers are unaffected.
+- **Case-insensitive Unicode ordinal sort** (uppercase) in the semantic
+  normalizer and the structural invariant-17 check, matching the canonical sort
+  rule in 0.1.2 and both agents' emitters.
+- **Invariant wording** (3, 4, 9, 16) updated to the precise 0.1.1 definitions
+  (checksum = XOR of first 127 dwords with quirks; "hive bins data size"
+  excludes the base block; 32-byte hbin header; KEY_COMP_NAME 0x0020 not the old
+  VALUE_COMP_NAME typo).
+- **Negative test** `key_delete_nonempty_needs_recursive` now expects
+  `KEY_HAS_CHILDREN` (was `ACCESS_DENIED`).
+- Full `--standin` run is GREEN (11/11 semantic, 0 warnings; the stand-in is
+  symmetric so the SACL-warning path is exercised only by the unit test).
 
 ## What is done
 

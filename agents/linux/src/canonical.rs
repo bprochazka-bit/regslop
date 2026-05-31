@@ -4,8 +4,10 @@
 //!
 //! serde_json's default `Map` is sorted by key, which satisfies the "use
 //! sorted keys" rule for object fields. We additionally sort the `subkeys` and
-//! `values` arrays lexicographically by name, case insensitively per Windows
-//! semantics, preserving original casing in the emitted `name`.
+//! `values` arrays by name using a case-insensitive Unicode ordinal comparison
+//! (names compared uppercased, per Windows semantics; CONTRACTS 0.1.2),
+//! preserving original casing in the emitted `name`. The Windows agent uses the
+//! same uppercase comparison, so the two outputs agree on ordering.
 
 use crate::model::Key;
 use serde_json::{json, Value as J};
@@ -22,13 +24,15 @@ pub fn canonical_hive(root: &Key) -> J {
     })
 }
 
-/// Case-insensitive lexicographic ordering used for both subkeys and values.
-/// Ties (same name ignoring case) fall back to the original byte order so the
-/// result is deterministic.
+/// Case-insensitive Unicode ordinal ordering used for both subkeys and values,
+/// matching Windows (RtlUpcaseUnicodeString) semantics: compare the names
+/// uppercased. Sibling names are case-insensitive-unique in a valid hive, so no
+/// casing tiebreak is reachable; we still fall back to the original byte order
+/// for determinism on any degenerate input.
 fn name_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    let la = a.to_ascii_lowercase();
-    let lb = b.to_ascii_lowercase();
-    la.cmp(&lb).then_with(|| a.cmp(b))
+    let ua = a.to_uppercase();
+    let ub = b.to_uppercase();
+    ua.cmp(&ub).then_with(|| a.cmp(b))
 }
 
 fn canonical_key(key: &Key) -> J {

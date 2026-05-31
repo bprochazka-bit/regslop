@@ -244,12 +244,9 @@ impl Backend for MemBackend {
                 .position(|k| k.name.eq_ignore_ascii_case(leaf))
                 .ok_or_else(|| AgentError::key_not_found(path))?;
             if !parent.subkeys[idx].subkeys.is_empty() && !recursive {
-                // Windows RegDeleteKey refuses a non-empty key; closest code in
-                // the table is ACCESS_DENIED. See spec-questions.md.
-                return Err(AgentError::new(
-                    Code::AccessDenied,
-                    format!("key has subkeys and recursive=false: {path}"),
-                ));
+                // Windows RegDeleteKey refuses a non-empty key. CONTRACTS 0.1.2
+                // gives this its own code, KEY_HAS_CHILDREN.
+                return Err(AgentError::key_has_children(path));
             }
             parent.subkeys.remove(idx);
             Ok(())
@@ -285,8 +282,10 @@ impl Backend for MemBackend {
             let key = hive.root.get(path)?;
             let mut subkeys: Vec<String> = key.subkeys.iter().map(|k| k.name.clone()).collect();
             let mut values: Vec<String> = key.values.iter().map(|v| v.name.clone()).collect();
-            subkeys.sort_by_key(|s| s.to_ascii_lowercase());
-            values.sort_by_key(|s| s.to_ascii_lowercase());
+            // Case-insensitive Unicode ordinal order, matching the canonical
+            // form and the Windows agent (CONTRACTS 0.1.2).
+            subkeys.sort_by(|a, b| a.to_uppercase().cmp(&b.to_uppercase()));
+            values.sort_by(|a, b| a.to_uppercase().cmp(&b.to_uppercase()));
             Ok(Listing { subkeys, values })
         })
     }

@@ -4,5 +4,6 @@
 //! recovery are orchestrated by the runner using these primitives.
 
 pub mod bytewise;
+pub mod sddl;
 pub mod semantic;
 pub mod structural;

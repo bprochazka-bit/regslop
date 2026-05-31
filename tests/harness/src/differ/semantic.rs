@@ -4,12 +4,19 @@
 //! key order, and array order never cause spurious diffs.
 //!
 //! Timestamps: `last_write` cannot agree to the second across two independent
-//! implementations, so it is normalized away by default. CONTRACTS.md treats
-//! the canonical form as the equality target but does not say how cross-agent
-//! timestamp skew is reconciled; that gap is filed in
-//! tests/harness/spec-questions.md. Pass `ignore_timestamps: false` for a
+//! implementations, so it is normalized away by default. CONTRACTS 0.1.2
+//! settles this: timestamps are excluded from semantic equality, and in
+//! particular every key under a renamed path has its `last_write` excluded
+//! (the Windows oracle emulates rename by subtree copy, which resets descendant
+//! timestamps). The default `ignore_timestamps: true` drops every `last_write`,
+//! which subsumes the renamed-path rule. Pass `ignore_timestamps: false` for a
 //! strict comparison.
+//!
+//! Security: the `sddl` field is not compared as a raw string. It is parsed
+//! into a normalized security descriptor and compared per ADR 0003 (owner,
+//! group, DACL always; SACL only when both sides report one). See `sddl.rs`.
 
+use super::sddl;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -29,14 +36,30 @@ impl Default for SemanticOptions {
     }
 }
 
-/// Compute the set of semantic differences between two canonical dumps. An
-/// empty result means the two hives are semantically equal.
-pub fn diff(left: &Value, right: &Value, opts: &SemanticOptions) -> Vec<Diff> {
+/// The result of a semantic comparison: hard `diffs` (semantic failures) and
+/// soft `warnings` (differences that ADR 0003 says must not fail the
+/// `semantic` tag but should still be visible in the run output, currently a
+/// one-sided SACL).
+#[derive(Debug, Clone, Default)]
+pub struct Report {
+    pub diffs: Vec<Diff>,
+    pub warnings: Vec<Diff>,
+}
+
+/// Compare two canonical dumps. Empty `diffs` means semantically equal;
+/// `warnings` may still be non-empty (see `Report`).
+pub fn compare(left: &Value, right: &Value, opts: &SemanticOptions) -> Report {
     let l = normalize(left, opts);
     let r = normalize(right, opts);
-    let mut out = Vec::new();
-    diff_rec("", &l, &r, &mut out);
-    out
+    let mut report = Report::default();
+    diff_rec("", &l, &r, &mut report);
+    report
+}
+
+/// Convenience wrapper returning only the hard differences. An empty result
+/// means the two hives are semantically equal.
+pub fn diff(left: &Value, right: &Value, opts: &SemanticOptions) -> Vec<Diff> {
+    compare(left, right, opts).diffs
 }
 
 const TS_SENTINEL: &str = "<ignored-timestamp>";
@@ -65,9 +88,10 @@ fn normalize(v: &Value, opts: &SemanticOptions) -> Value {
                 normed.sort_by(|a, b| {
                     let na = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     let nb = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    na.to_ascii_lowercase()
-                        .cmp(&nb.to_ascii_lowercase())
-                        .then_with(|| na.cmp(nb))
+                    // Case-insensitive Unicode ordinal order (names uppercased),
+                    // matching the canonical sort rule in CONTRACTS 0.1.2 and
+                    // both agents' emitters.
+                    na.to_uppercase().cmp(&nb.to_uppercase()).then_with(|| na.cmp(nb))
                 });
             }
             Value::Array(normed)
@@ -76,7 +100,7 @@ fn normalize(v: &Value, opts: &SemanticOptions) -> Value {
     }
 }
 
-fn diff_rec(path: &str, l: &Value, r: &Value, out: &mut Vec<Diff>) {
+fn diff_rec(path: &str, l: &Value, r: &Value, report: &mut Report) {
     match (l, r) {
         (Value::Object(lm), Value::Object(rm)) => {
             let mut keys: Vec<&String> = lm.keys().chain(rm.keys()).collect();
@@ -89,12 +113,27 @@ fn diff_rec(path: &str, l: &Value, r: &Value, out: &mut Vec<Diff>) {
                     format!("{path}.{k}")
                 };
                 match (lm.get(k), rm.get(k)) {
-                    (Some(lv), Some(rv)) => diff_rec(&child, lv, rv, out),
-                    (Some(_), None) => out.push(Diff {
+                    // The `sddl` field is compared as a normalized security
+                    // descriptor, not as a raw string (ADR 0003). A one-sided
+                    // SACL is not a failure but is surfaced as a warning so a
+                    // genuinely dropped SACL stays visible.
+                    (Some(Value::String(ls)), Some(Value::String(rs))) if k == "sddl" => {
+                        for detail in sddl::compare(ls, rs) {
+                            report.diffs.push(Diff { path: child.clone(), detail });
+                        }
+                        if sddl::one_sided_sacl(ls, rs) {
+                            report.warnings.push(Diff {
+                                path: child.clone(),
+                                detail: "SACL present on only one side (not compared)".to_string(),
+                            });
+                        }
+                    }
+                    (Some(lv), Some(rv)) => diff_rec(&child, lv, rv, report),
+                    (Some(_), None) => report.diffs.push(Diff {
                         path: child,
                         detail: "present on left, missing on right".to_string(),
                     }),
-                    (None, Some(_)) => out.push(Diff {
+                    (None, Some(_)) => report.diffs.push(Diff {
                         path: child,
                         detail: "missing on left, present on right".to_string(),
                     }),
@@ -104,17 +143,17 @@ fn diff_rec(path: &str, l: &Value, r: &Value, out: &mut Vec<Diff>) {
         }
         (Value::Array(la), Value::Array(ra)) => {
             if la.len() != ra.len() {
-                out.push(Diff {
+                report.diffs.push(Diff {
                     path: path.to_string(),
                     detail: format!("array length differs: left={}, right={}", la.len(), ra.len()),
                 });
                 return;
             }
             for (i, (lv, rv)) in la.iter().zip(ra.iter()).enumerate() {
-                diff_rec(&format!("{path}[{i}]"), lv, rv, out);
+                diff_rec(&format!("{path}[{i}]"), lv, rv, report);
             }
         }
-        (lv, rv) if lv != rv => out.push(Diff {
+        (lv, rv) if lv != rv => report.diffs.push(Diff {
             path: path.to_string(),
             detail: format!("value differs: left={lv}, right={rv}"),
         }),
