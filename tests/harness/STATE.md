@@ -2,6 +2,36 @@
 
 Last updated: 2026-05-31
 
+## Corpus loader + byte-level structural invariants (latest session)
+
+PR #29 checked in offreg-generated synthetic hives under
+`tests/corpus/synthetic/` (real `regf` bytes, no third-party content). That
+unblocked the byte-level structural invariants, which had been `Skipped` stubs
+for want of real hive bytes in the repo.
+
+- New `src/differ/regf.rs`: a minimal `regf` byte parser (base block + checksum
+  + hbin/cell walk). Not a logical parser; the same parser will back the
+  differential roundtrip once libreg can read `regf`.
+- `structural::check_bytes(bytes)`: evaluates invariants 1 to 6, 9, 10 from the
+  base block and hbin/cell structure against a real hive file. 7, 8, 11 to 16
+  need a logical-tree parse and stay `Skipped`; 17/18 belong to the agent-output
+  `check()`.
+- New `src/corpus.rs`: reads every `*.hiv` under `--corpus-dir` (default
+  `tests/corpus/synthetic`) and emits one `structural`-tagged `TestResult` per
+  hive. Runs in every mode (it reads files, no agent needed). `run.sh` passes an
+  absolute `--corpus-dir`.
+- Result: `structural` is now 8/8 (4 agent-based + 4 corpus hives), all PASS,
+  validating the regf checker against known-good offreg output. 3 new corpus
+  unit tests (all synthetic hives pass; a flipped checksum byte fails inv3; a
+  missing dir yields nothing).
+
+NOT done (and why): the load-on-both-agents differential *roundtrip* over the
+corpus is still blocked. It needs the Linux agent to parse a real `regf` hive,
+which the in-memory `MemBackend` cannot (it reads only its own JSON envelope);
+libreg's `regf` reader is in progress. When it lands, `differ::regf` is the
+parser to reuse, and the logical-tree invariants (7, 11 to 16) can be filled in
+from the same parse.
+
 ## Read-op response comparison (latest session)
 
 Closed a real gap: the harness compared only the final hive dump, never the
