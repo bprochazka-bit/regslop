@@ -4,7 +4,7 @@ This file is the single source of truth for interfaces between components.
 All agents read this file. Only the spec agent writes to it.
 Changes require a PR labeled `contracts` and a version bump.
 
-**Current version: 0.1.0**
+**Current version: 0.1.2**
 
 ## Versioning
 
@@ -91,6 +91,16 @@ GET  /key/info      { "handle", "path" }
 Path separator is `\\` (escaped backslash in JSON, literal backslash in path).
 Paths never start with a separator. Empty string `""` means the hive root.
 
+`/key/rename` MUST preserve the renamed key's values, class name, security,
+and its entire subkey subtree (names, values, security). It MAY update the
+renamed key's own `last_write`. Because the Windows oracle has no native
+rename and emulates it by create plus subtree copy plus delete, copied
+descendants receive fresh timestamps; the oracle therefore cannot preserve
+descendant `last_write`. For this reason the harness EXCLUDES `last_write`
+from semantic comparison for the renamed key and every key beneath it. The
+library MAY still preserve descendant timestamps natively; that is correct
+but not asserted by the `semantic` tag.
+
 ### Value operations
 
 ```
@@ -125,9 +135,20 @@ GET  /key/security  { "handle", "path" }
 POST /key/security  { "handle", "path", "sddl": "..." }
 ```
 
+Read and write are distinguished by HTTP method, not by request body:
+`GET /key/security` reads (no `sddl` in the request) and `POST /key/security`
+writes (the `sddl` field is REQUIRED on POST). Agents MUST NOT infer the
+operation from the presence of the `sddl` field.
+
 Security descriptors transit as SDDL strings. Agents are responsible for
 converting to/from the binary form. The harness compares both SDDL and
 canonical binary form.
+
+For comparison the SDDL is normalized to the owner, group, and DACL
+components (`O:`, `G:`, `D:`). The SACL (`S:`) is compared only when BOTH
+agents report one: offline hives do not always expose a readable SACL and
+offreg may omit it, so a one-sided SACL is not a semantic difference. See
+`docs/adr/0003-sddl-security.md` for the normalization rules and rationale.
 
 ### Diagnostics
 
@@ -171,9 +192,12 @@ comparison. Field order matters (use sorted keys). Whitespace does not
 
 Rules:
 
-- `subkeys` and `values` arrays are sorted lexicographically by `name`
-- `name` comparisons are case-insensitive per Windows semantics, but the
-  original casing is preserved in the JSON
+- `subkeys` and `values` arrays are sorted by `name` using a
+  case-insensitive Unicode ordinal comparison (compare names uppercased,
+  per Windows semantics); the original casing is preserved in the JSON.
+  Both agents MUST use this same comparator or semantic diffs will fire on
+  ordering alone. Sibling names are case-insensitive-unique in a hive, so
+  no casing tiebreak is reachable in valid data.
 - `last_write` is ISO 8601 UTC with second precision; nanoseconds are
   dropped during canonicalization to allow cross-platform comparison
 - `class_name` is null when absent, never an empty string
@@ -182,17 +206,23 @@ Rules:
 ## Hive File Format Invariants
 
 These invariants must hold for any hive produced by libreg or offreg
-after a successful save. The harness checks all of these.
+after a successful save. The harness checks all of these. See
+`docs/hive-format.md` for the field-level layout each invariant refers to.
+"dword X" below means the 4-byte little-endian value at byte offset X, not
+the Xth dword.
 
 1. Base block magic = `regf`
 2. Base block primary sequence = secondary sequence (clean hive)
-3. Base block checksum (XOR of dwords 0..507) matches stored value
-4. Total size (base block dword 40) matches actual hbin total
+3. Base block checksum matches stored value: XOR of the first 127 dwords
+   (bytes 0 through 507), with the quirks 0 stored as 1 and 0xFFFFFFFF
+   stored as 0xFFFFFFFE
+4. Hive bins data size (base block dword at offset 40) matches the actual
+   total of all hbins; this excludes the 4096-byte base block
 5. Every hbin starts with magic `hbin`, has size multiple of 4096
 6. Every cell has size != 0; sign indicates allocated (-) or free (+)
 7. Allocated cells form a tree rooted at root cell offset (base block dword 36)
 8. Free cells are tracked in the allocator's free list (implementation defined)
-9. Sum of cell sizes within an hbin equals hbin size minus header
+9. Sum of cell sizes within an hbin equals hbin size minus the 32-byte header
 10. No cell crosses an hbin boundary
 11. Subkey list cell types follow promotion: lf/lh for < 1015 entries,
     ri for > 1015, li only when loading old hives
@@ -200,7 +230,7 @@ after a successful save. The harness checks all of these.
 13. Security cells form a doubly linked list with reference counts
 14. Reference counts on sk cells are accurate (no orphans, no dangling)
 15. Class name strings, if present, are UTF-16LE
-16. Key names are UTF-16LE if the nk flag VALUE_COMP_NAME is clear,
+16. Key names are UTF-16LE if the nk flag KEY_COMP_NAME (0x0020) is clear,
     ASCII (Latin-1) if set
 17. Subkey lists are sorted; binary search is valid
 18. Transaction log files (.LOG1, .LOG2) are either absent (clean hive)
@@ -245,6 +275,7 @@ pass are warnings, not errors.
 | TYPE_MISMATCH         | data shape does not match declared type         |
 | ACCESS_DENIED         | security descriptor blocks operation            |
 | LOG_CORRUPT           | transaction log replay failed                   |
+| KEY_HAS_CHILDREN      | non-recursive delete of a key that has subkeys   |
 | INTERNAL              | bug; include stack/trace in error string        |
 
 ## What This Document Does Not Cover
@@ -256,4 +287,18 @@ pass are warnings, not errors.
 
 ## Change Log
 
+- 0.1.2 (minor): add error code `KEY_HAS_CHILDREN` (non-recursive delete of
+  a key with subkeys; was surfaced as `INTERNAL`). Clarify `/key/security`
+  read vs write is by HTTP method (GET vs POST), not by `sddl` presence.
+  Define canonical SDDL normalization (O/G/D always, SACL only when both
+  sides report one; see ADR 0003). Specify `/key/rename` preserves the
+  subtree and that the harness excludes `last_write` under a renamed path
+  from semantic comparison. Sharpen the canonical sort comparator
+  (case-insensitive Unicode ordinal). Additive only; no breaking change.
+- 0.1.1 (patch): clarifications only, no wire or format change. Invariant 3
+  checksum computation made precise (127 dwords / bytes 0..507, plus the
+  0 and 0xFFFFFFFF quirks). Invariant 4 reworded to "hive bins data size"
+  and noted it excludes the base block. Invariant 9 states the 32-byte hbin
+  header. Invariant 16 typo fixed: KEY_COMP_NAME, not VALUE_COMP_NAME.
+  Added a pointer to docs/hive-format.md and clarified "dword X" notation.
 - 0.1.0 (initial): defines protocol, canonical form, hive invariants
