@@ -1,0 +1,111 @@
+# Read endpoints exercised as explicit operations so the harness compares what
+# each agent RETURNS (key_list/key_info/value_get/key_security_get), not just
+# the final hive dump. The runner diffs the response payloads cross-agent with
+# the semantic differ (last_write ignored, sddl normalized).
+name: list_and_info_reads
+tags: [semantic]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_reads.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: Software\App\Beta
+  - op: key_create
+    handle: $h
+    path: Software\App\Alpha
+  - op: value_set
+    handle: $h
+    key: Software\App
+    name: Zeta
+    type: REG_SZ
+    data: "z"
+  - op: value_set
+    handle: $h
+    key: Software\App
+    name: Aria
+    type: REG_DWORD
+    data: 7
+  - op: key_list
+    handle: $h
+    path: Software\App
+  - op: key_info
+    handle: $h
+    path: Software\App
+  - op: hive_save
+    handle: $h
+expect:
+  semantic_equal: true
+---
+# value_get across several REG types; the QWORD also checks that both agents
+# canonicalize "4294967296" (< 2^53) to a JSON number.
+name: value_get_reads
+tags: [semantic]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_valget.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: Data
+  - op: value_set
+    handle: $h
+    key: Data
+    name: Str
+    type: REG_SZ
+    data: "hello"
+  - op: value_set
+    handle: $h
+    key: Data
+    name: Num
+    type: REG_DWORD
+    data: 42
+  - op: value_set
+    handle: $h
+    key: Data
+    name: Big
+    type: REG_QWORD
+    data: "4294967296"
+  - op: value_get
+    handle: $h
+    key: Data
+    name: Str
+  - op: value_get
+    handle: $h
+    key: Data
+    name: Num
+  - op: value_get
+    handle: $h
+    key: Data
+    name: Big
+  - op: hive_save
+    handle: $h
+expect:
+  semantic_equal: true
+---
+# key_security_get on a fresh key (default descriptor) and after an explicit
+# set. The default-descriptor read also exercises the SACL-asymmetry path: if
+# offreg exposes a SACL the Linux side does not, that is a warning, not a fail.
+name: security_get_reads
+tags: [semantic]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_secget.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: Plain
+  - op: key_security_get
+    handle: $h
+    path: Plain
+  - op: key_security_set
+    handle: $h
+    path: Plain
+    sddl: "O:BAG:BAD:(A;;KA;;;SY)(A;;KR;;;BU)"
+  - op: key_security_get
+    handle: $h
+    path: Plain
+  - op: hive_save
+    handle: $h
+expect:
+  semantic_equal: true

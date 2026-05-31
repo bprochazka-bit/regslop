@@ -68,6 +68,18 @@ pub struct OpResult {
     pub ok: bool,
     pub code: Option<String>,
     pub transport_error: Option<String>,
+    /// Response `data` for a successful read op (key_list, key_info, value_get,
+    /// key_security_get), captured so the harness can compare what each agent
+    /// returns for the same read. `None` for writes, failures, and non-reads.
+    pub data: Option<Value>,
+}
+
+/// Read endpoints whose response payload is compared across agents. A read op
+/// returning divergent data even when the stored hive matches (e.g. a wrong
+/// `/key/list` order or a buggy `/key/info` count) would otherwise slip past
+/// the dump-based semantic comparison.
+fn is_read_op(op: &str) -> bool {
+    matches!(op, "key_list" | "key_info" | "value_get" | "key_security_get")
 }
 
 pub struct SeqResult {
@@ -211,6 +223,7 @@ fn run_sequence(client: &Client, test: &TestDef) -> SeqResult {
                     ok: false,
                     code: None,
                     transport_error: Some(format!("unknown op: {op_name}")),
+                    data: None,
                 });
                 continue;
             }
@@ -243,12 +256,15 @@ fn run_sequence(client: &Client, test: &TestDef) -> SeqResult {
 
         match client.call(method, path, &body) {
             Ok(env) => {
+                let read_data =
+                    if env.ok && is_read_op(&op_name) { Some(env.data.clone()) } else { None };
                 op_results.push(OpResult {
                     op: op_name.clone(),
                     expect_error: expect_error.clone(),
                     ok: env.ok,
                     code: env.code.clone(),
                     transport_error: None,
+                    data: read_data,
                 });
                 if env.ok {
                     if let Some(cap) = &capture {
@@ -277,6 +293,7 @@ fn run_sequence(client: &Client, test: &TestDef) -> SeqResult {
                 ok: false,
                 code: None,
                 transport_error: Some(e),
+                data: None,
             }),
         }
     }
@@ -317,7 +334,8 @@ pub fn run_operations(test: &TestDef, agents: &Agents) -> TestResult {
     let windows = agents.windows.map(|w| run_sequence(w, test));
 
     let mut problems = Vec::new();
-    compare_op_results(&linux, windows.as_ref(), &mut problems);
+    let mut read_warnings = Vec::new();
+    compare_op_results(&linux, windows.as_ref(), &mut problems, &mut read_warnings);
 
     let mut semantic = compute_semantic(&linux, windows.as_ref(), &problems);
     let mut structural = compute_structural(test, &linux, windows.as_ref());
@@ -342,6 +360,13 @@ pub fn run_operations(test: &TestDef, agents: &Agents) -> TestResult {
         fail_tag("roundtrip", &mut roundtrip);
     }
 
+    // A read-op warning with no hard failure (a one-sided SACL from
+    // key_security_get) downgrades a passing semantic result to a warning,
+    // mirroring how the dump-based SACL asymmetry is handled.
+    if problems.is_empty() && !read_warnings.is_empty() && matches!(semantic, AspectOutcome::Pass) {
+        semantic = AspectOutcome::Warn(read_warnings.join("; "));
+    }
+
     TestResult {
         name: test.name.clone(),
         tags: test.tags.clone(),
@@ -357,8 +382,17 @@ pub fn run_operations(test: &TestDef, agents: &Agents) -> TestResult {
     }
 }
 
-/// Per-op checks: expected errors and cross-agent code divergence.
-fn compare_op_results(linux: &SeqResult, windows: Option<&SeqResult>, problems: &mut Vec<String>) {
+/// Per-op checks: expected errors, cross-agent code divergence, and cross-agent
+/// divergence in the response payload of read ops. Hard divergences go to
+/// `problems` (which fail the test); read-op warnings (a one-sided SACL from
+/// `key_security_get`) go to `read_warnings`, which only downgrades `semantic`
+/// to a warning.
+fn compare_op_results(
+    linux: &SeqResult,
+    windows: Option<&SeqResult>,
+    problems: &mut Vec<String>,
+    read_warnings: &mut Vec<String>,
+) {
     for (i, op) in linux.op_results.iter().enumerate() {
         if let Some(te) = &op.transport_error {
             problems.push(format!("op[{i}] {} transport error on linux: {te}", op.op));
@@ -386,6 +420,26 @@ fn compare_op_results(linux: &SeqResult, windows: Option<&SeqResult>, problems: 
                     "op[{i}] {} error code diverged: linux={:?}, windows={:?}",
                     l.op, l.code, r.code
                 ));
+            }
+            // Both agents succeeded on a read op: compare what they returned.
+            // Reuse the semantic differ so `last_write` is ignored and `sddl`
+            // is normalized (O/G/D always, SACL only when both report one).
+            if l.ok && r.ok && is_read_op(&l.op) {
+                if let (Some(ld), Some(rd)) = (&l.data, &r.data) {
+                    let rep = semantic::compare(ld, rd, &semantic::SemanticOptions::default());
+                    for d in rep.diffs {
+                        problems.push(format!(
+                            "op[{i}] {} response diverged at {}: {}",
+                            l.op, d.path, d.detail
+                        ));
+                    }
+                    for d in rep.warnings {
+                        read_warnings.push(format!(
+                            "op[{i}] {} response at {}: {}",
+                            l.op, d.path, d.detail
+                        ));
+                    }
+                }
             }
         }
     }
