@@ -159,13 +159,14 @@ bytewise; the library codec currently emits owner-first).
 
 ## Open spec questions (mine; still NOT resolved; do not guess in code)
 
-1. STILL OPEN, now requested as issue #34. Invariant 11 promotion threshold
-   "1015". Public sources put the lh/lf leaf maximum near 1013, li splitting
-   around 508; "1015" is close but off and version dependent. The synthetic
-   corpus did NOT answer this: ref_wide.hiv is a wide NAME, not a wide KEY.
-   Filed #34 asking the Windows agent for a ~1100-subkey fixture that forces
-   the lh -> ri split; then replace "1015" with the empirical offreg count or
-   restate it as offreg-defined. Did NOT change the number in CONTRACTS.md.
+1. RESOLVED (0.1.7), issue #34 closed. Invariant 11 promotion threshold: the
+   Windows agent added tests/corpus/synthetic/ref_ri.hiv (PR #35, 1100
+   subkeys k00000..k01099). Parsed it: the root carries an ri over three lh
+   leaves of 507, 507, and 86, so an lh/lf leaf holds at most 507 entries and
+   the 508th subkey promotes to ri. NOTE: offreg's 507 is well below the
+   live-kernel ~1013 (CmpSplitLeaf); the oracle, not the literature, is what
+   the differ checks, so libreg targets 507. Corrected CONTRACTS invariant 11
+   from "1015" to 507 and recorded the verification in hive-format.md (0.1.7).
 
 2. RESOLVED from the corpus (PR #32). offreg-10.0.22621 writes minor version
    5 (v1.5) for a freshly created and saved hive (all four

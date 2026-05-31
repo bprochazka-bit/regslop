@@ -337,29 +337,28 @@ Unicode upcase table, not ASCII-only:
 
 ASCII names were already correct; this pins the non-ASCII case.
 
-#### Promotion threshold (approximate; confirm against offreg)
+#### Promotion threshold (verified against offreg)
 
-CONTRACTS invariant 11 states "lf/lh for < 1015 entries, ri for > 1015".
-Suhanov's spec gives no explicit count. Kernel-derived analyses
-(CmpSplitLeaf) put the real figures near, but not exactly at, 1015:
+An lh/lf leaf holds at most **507** entries; the 508th subkey promotes the key
+to an `ri` index root over multiple leaves. CONTRACTS invariant 11 is corrected
+to this in 0.1.7 (the earlier "1015" was wrong, and the live-kernel figures
+below do not apply to offreg).
 
-- a hash/fast leaf (lh/lf) holds up to about 1013 entries; once that is
-  exceeded the kernel builds a two-level tree with an `ri` index root
-  pointing at leaves
-- index leaves (li) are reported to split earlier (around 508 entries)
+Verified from `tests/corpus/synthetic/ref_ri.hiv` (offreg-10.0.22621): a root
+with 1100 subkeys (`k00000`..`k01099`) carries an `ri` over three `lh` leaves
+of 507, 507, and 86 entries. offreg fills a leaf to 507 before spilling into
+the next, so the per-leaf cap is 507.
 
-So CONTRACTS "1015" is in the right neighbourhood but off by a couple, and
-the precise split point is version and implementation dependent (sources
-disagree on the exact number). Treat it as offreg-defined: libreg MUST
-match whatever offreg produces (libreg/CLAUDE.md rule 4), and the harness
-2000-subkey test (libreg step 8) establishes the real boundary
-empirically. Do not hardcode 1015. Tracked as an open spec question in
-docs/STATE.md.
+Note this is well below the live-kernel figure: kernel-derived analyses
+(`CmpSplitLeaf`) put a hash/fast leaf near 1013 entries, with index leaves
+(li) splitting around 508. offreg's `ORCreateKey` evidently splits lh leaves
+much earlier, near the li figure. This is exactly why the spec defers to
+offreg (libreg/CLAUDE.md rule 4): the oracle's behavior, not the kernel
+literature, is what the differ checks. libreg MUST match offreg's 507.
 
-Sources (retrieved 2026-05-30): Suhanov spec "Subkeys list"; Google
-Project Zero "The Windows Registry Adventure #5"; Eric Zimmerman's
-Registry parser. They differ on the exact number, which is itself the
-reason to defer to offreg.
+Sources (retrieved 2026-05-30): Suhanov spec "Subkeys list"; Google Project
+Zero "The Windows Registry Adventure #5"; Eric Zimmerman's Registry parser.
+They describe the live kernel; the corpus pins what offreg actually emits.
 
 ### 3.5 Value list
 
@@ -432,9 +431,13 @@ data size). Class-name strings are UTF-16LE (CONTRACTS invariant 15).
 
 Tracked in docs/STATE.md:
 
-1. Invariant 11 promotion threshold (1015 approximate; real lh/lf max near
-   1013, li near 508; defer to offreg).
-2. Exact on-disk minor version libreg writes for dual logging (3 vs 6 vs
-   CONTRACTS "v1.5"). Confirm against corpus.
-3. Whether the v0.1 canonical form should expose the nk class name (it is
-   in the canonical schema as `class_name` but no operation sets it yet).
+1. RESOLVED (0.1.7): invariant 11 promotion threshold is 507, offreg's lh
+   leaf cap, from ref_ri.hiv (1100 subkeys form an ri over lh leaves of 507,
+   507, 86). Well below the live-kernel ~1013; the differ defers to offreg.
+   See 3.4.
+2. RESOLVED: offreg writes on-disk minor version 5 (v1.5) for a fresh create
+   (all synthetic fixtures); minor 6 is the live-kernel dual-log variant
+   offreg does not produce. See the Versions section.
+3. STILL OPEN: whether the v0.1 canonical form should expose the nk class
+   name (it is in the canonical schema as `class_name` but no operation sets
+   it yet, and no fixture exercises one).
