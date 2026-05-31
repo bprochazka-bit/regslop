@@ -4,7 +4,7 @@
 //!
 //! - Layer 0 [`format`]: on-disk structures, pure parse/serialize.
 //! - Layer 1 [`alloc`]: deterministic cell allocator over the bins data.
-//! - Layer 2 `logical`: keys, values, security (not yet implemented).
+//! - Layer 2 [`logical`]: keys, values, security over the allocator.
 //! - Layer 3 `log`: transaction logs (not yet implemented).
 //! - Layer 4 `api`: public surface (not yet implemented).
 //!
@@ -13,3 +13,4 @@
 
 pub mod alloc;
 pub mod format;
+pub mod logical;
