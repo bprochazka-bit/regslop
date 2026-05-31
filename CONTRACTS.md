@@ -4,7 +4,7 @@ This file is the single source of truth for interfaces between components.
 All agents read this file. Only the spec agent writes to it.
 Changes require a PR labeled `contracts` and a version bump.
 
-**Current version: 0.1.3**
+**Current version: 0.1.4**
 
 ## Versioning
 
@@ -292,7 +292,17 @@ pass are warnings, not errors.
 | ACCESS_DENIED         | security descriptor blocks operation            |
 | LOG_CORRUPT           | transaction log replay failed                   |
 | KEY_HAS_CHILDREN      | non-recursive delete of a key that has subkeys   |
+| BAD_REQUEST           | request is malformed; caller error, not agent bug |
 | INTERNAL              | bug; include stack/trace in error string        |
+
+`BAD_REQUEST` covers a structurally malformed request: a body that is not
+valid JSON, a missing or wrong-typed REQUIRED field, or an unknown constant
+(e.g. an unrecognized value-type name or a path that starts with a
+separator). It is the caller's error. `INTERNAL` is reserved for the agent
+failing to process a well-formed request, which is an agent bug; the harness
+relies on this split to tell test mistakes from real defects. `BAD_REQUEST`
+is distinct from `TYPE_MISMATCH`: the latter applies when a well-formed
+`/value/set` carries `data` that does not fit the declared REG type.
 
 ## What This Document Does Not Cover
 
@@ -303,6 +313,10 @@ pass are warnings, not errors.
 
 ## Change Log
 
+- 0.1.4 (minor): add error code `BAD_REQUEST` for a malformed request
+  (invalid JSON, missing/wrong-typed required field, unknown constant);
+  previously surfaced as `INTERNAL`. Lets the harness tell caller/test
+  errors from agent bugs. Additive only; no breaking change.
 - 0.1.3 (minor): ratify the default security descriptor for a key created
   without an explicit one (offreg-observed value, see the Security section
   and issue #11). It is asserted by the `semantic` tag via the O/G/D
