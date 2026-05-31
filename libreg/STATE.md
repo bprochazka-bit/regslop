@@ -2,11 +2,22 @@
 
 Last updated: 2026-05-31 (library agent)
 
-Merge state: steps 1-5 are on main (allocator #27, key create #33, value set
-#37, all MERGED). THIS session (branch `agent/library-offreg-align` off main)
-aligns the create path with the offreg REFERENCE HIVES that landed in
-`tests/corpus/synthetic/` (offreg-generated; see their PROVENANCE.md). PR
-targets main.
+Merge state: steps 1-5 plus the offreg-alignment pass are on main (allocator
+#27, key create #33, value set #37, offreg-align #41, all MERGED). THIS
+session (branch `agent/library-enum` off main) implements step 6: reading
+subkey lists of every on-disk form (lf/lh/li/ri), verified against the offreg
+reference hives. PR targets main.
+
+STEP 6 (this session): added Layer 0 `format/li.rs` (IndexLeaf) and
+`format/ri.rs` (IndexRoot), and made `logical::index::list_entries` dispatch
+on the cell signature so it enumerates lf, lh, li, and an ri index of leaves
+(descending one level; ri never points at ri). `tests/enumerate_corpus.rs`
+loads ref_ri.hiv (1100 keys as an ri of three lh leaves [507, 507, 86]) and
+checks all names come back sorted (k00000..k01099) and resolve across leaf
+boundaries. libreg can now READ real hives with any subkey-list form. Create
+still WRITES lh only (<=507); ri promotion on write is step 8.
+
+----- earlier sessions below -----
 
 BIG NEWS: those reference hives are offreg ground truth and let us verify
 output OFFLINE (Hard Rule 4, "match offreg, not docs", finally actionable).
@@ -346,9 +357,14 @@ every `format/*.rs`; pass only the files you changed, or revert the rest.):
   security descriptors: `one_ascii_subkey_matches_offreg`,
   `six_ascii_subkeys_match_offreg`, `latin1_name_matches_offreg`,
   `wide_name_matches_offreg`. SKIP if a fixture is absent.
-- Examples (this session): `examples/dump_hive.rs` (structure dump of any
-  hive, used to read the references) and `examples/make_key_hive.rs` (write a
-  hive with given subkeys to a path, for manual offreg/harness testing).
+- Examples: `examples/dump_hive.rs` (structure dump of any hive, used to read
+  the references) and `examples/make_key_hive.rs` (write a hive with given
+  subkeys to a path, for manual offreg/harness testing).
+- `src/format/li.rs` and `src/format/ri.rs` (step 6 enumeration): round-trip,
+  cell, bad-signature, and count-past-end tests each.
+- `tests/enumerate_corpus.rs` (step 6): `reads_ri_indexed_wide_key`
+  (ref_ri.hiv, 1100 keys via an ri, sorted + boundary resolves) and
+  `reads_lh_leaf_hives` (the single-leaf lh fixtures).
 
 ## Step 3/4/5 verification against offreg references (this session)
 
@@ -401,9 +417,13 @@ now strong (byte-identical empty-hive prefix and descriptor, matching tree).
   refcount DECREMENT and orphan-free on key delete (pairs with step 7).
 - No key deletion yet (step 7); the allocator's `free`/coalesce is ready
   for it, but no logical delete path frees an nk/list/sk subtree.
-- Steps 6-11 otherwise not started. li/ri/db format modules not written
-  (vk now exists). Step 6 is subkey enumeration via lf/lh on a CORPUS hive
-  (our create-side lh enumeration already works; step 6 wants a real hive).
+- Step 6 (subkey enumeration, READ side) DONE this session: lf/lh/li/ri all
+  enumerate, verified against ref_ri.hiv. The WRITE side of wide keys (ri
+  promotion past 507) is step 8, still TODO (issue #40 waits on it).
+- Steps 7-11 not started. db format module not written (lf/lh/li/ri/vk all
+  exist now). insert_subkey still parses the existing list as lh only, so
+  inserting into a LOADED li/ri/lf hive errors; fine until step 8 generalizes
+  the write path.
 - Allocator is a content-agnostic substrate only: it does not update nk
   link fields, refcounts, or counts. That bookkeeping is Layer 2's job.
 - Allocator does not yet free into a size-bucketed list; first-fit scans
@@ -472,16 +492,19 @@ now strong (byte-identical empty-hive prefix and descriptor, matching tree).
    on wiring `Hive` into `agents/linux` (their subtree). The offline evidence
    is now strong (byte-identical empty-hive prefix + descriptor, matching
    tree vs the offreg references), so this should pass.
-2. Step 6: subkey enumeration from the CORPUS hives that now exist
-   (tests/corpus/synthetic). Our logical layer only reads `lh`; ref_ri.hiv
-   uses an `ri` index of `lh` leaves. Add `format/ri.rs` (and `li.rs`) Layer 0
-   parsers and make `index::list_entries` dispatch on the cell signature
-   (lf/lh/li/ri) so it can enumerate any real hive. `examples/dump_hive.rs`
-   already has a partial ri walker to crib from. This is the natural next step
-   and is fully offline-testable against ref_ri.hiv.
-3. Step 7 (key/value delete + free list): the allocator's free/coalesce is
+2. Step 6 (subkey enumeration, READ) DONE this session (format/li.rs +
+   ri.rs + dispatch in index::list_entries, verified against ref_ri.hiv).
+3. Step 8 (ri promotion on WRITE) is the highest-leverage next step because
+   the harness is waiting on it (issue #40: un-skip invariant 11 once libreg
+   writes wide keys). Generalize `insert_subkey`: when an lh leaf would
+   exceed 507, promote to an `ri` of lh leaves; route inserts to the right
+   leaf, keeping global name order; split further leaves at 507. Verify by
+   creating 1100 keys and diffing the structure against ref_ri.hiv (the
+   read path from this session reads it back). The IndexRoot/IndexLeaf
+   serializers already exist.
+4. Step 7 (key/value delete + free list): the allocator's free/coalesce is
    ready; add a logical delete that frees the nk, its subkey/value lists, and
-   decrements/frees the sk (refcount down, free at 0). Value delete too.
+   decrements the sk refcount (free the sk at 0). Value delete too.
 4. Bytewise parity polish (lower priority, all bytewise-only): match offreg's
    allocation order (lh before child nk), the non-ASCII lh hash (full Unicode
    upcase, issue #22). The `dump_hive`/`make_key_hive` examples make this easy

@@ -1,16 +1,21 @@
-//! Subkey-list (lh) management for the logical layer.
+//! Subkey-list management for the logical layer.
 //!
 //! A key's subkeys are indexed by a list cell pointed to from the nk
-//! "subkeys list offset". This layer keeps that list as an `lh` hash leaf
-//! (the form modern hives use; see docs/hive-format.md), name-sorted so the
-//! enumeration order is canonical (invariant 17). Inserting reallocates the
-//! list cell to fit the extra entry; the allocator reclaims the old one.
+//! "subkeys list offset". Enumeration ([`list_entries`]) reads any of the
+//! four on-disk forms (lf, lh, li, and an ri index of those leaves) so libreg
+//! can load real hives. Insertion ([`insert_subkey`]) only writes `lh`, the
+//! form modern hives use (docs/hive-format.md), name-sorted so the order is
+//! canonical (invariant 17); reallocating the list cell to fit each entry.
 
 use super::key;
 use super::LogicalError;
 use crate::alloc::HiveImage;
+use crate::format::lf::FastLeaf;
 use crate::format::lh::{HashLeaf, HashLeafEntry};
+use crate::format::li::IndexLeaf;
 use crate::format::nk::{KeyNode, OFFSET_NONE};
+use crate::format::ri::IndexRoot;
+use crate::format::FormatError;
 use core::cmp::Ordering;
 
 /// Maximum entries in a single lh leaf before a two-level ri index root is
@@ -76,7 +81,8 @@ pub fn insert_subkey(
 }
 
 /// Read every subkey of `parent` as `(nk offset, decoded name)`, in stored
-/// (name-sorted) order. Empty when the key has no subkey list.
+/// (name-sorted) order. Handles all four list forms (lf/lh/li/ri). Empty when
+/// the key has no subkey list.
 pub fn list_entries(
     image: &HiveImage,
     parent: &KeyNode,
@@ -84,11 +90,53 @@ pub fn list_entries(
     if parent.subkeys_list_offset == OFFSET_NONE {
         return Ok(Vec::new());
     }
-    let leaf = HashLeaf::parse(image.content(parent.subkeys_list_offset))?;
-    let mut out = Vec::with_capacity(leaf.entries.len());
-    for entry in &leaf.entries {
-        let nk = key::read_nk(image, entry.key_offset)?;
-        out.push((entry.key_offset, key::key_name_string(&nk)));
+    let offsets = subkey_offsets(image, parent.subkeys_list_offset)?;
+    let mut out = Vec::with_capacity(offsets.len());
+    for off in offsets {
+        let nk = key::read_nk(image, off)?;
+        out.push((off, key::key_name_string(&nk)));
     }
     Ok(out)
+}
+
+/// Collect the subkey nk offsets reachable from the list cell at
+/// `list_offset`, descending one level through an ri index into its leaves.
+fn subkey_offsets(image: &HiveImage, list_offset: u32) -> Result<Vec<u32>, LogicalError> {
+    let payload = image.content(list_offset);
+    if signature_of(payload) == Some(*b"ri") {
+        let ri = IndexRoot::parse(payload)?;
+        let mut out = Vec::new();
+        for leaf_off in ri.leaf_offsets {
+            // An ri points only at leaves (lf/lh/li), never another ri.
+            out.extend(leaf_offsets(image.content(leaf_off))?);
+        }
+        Ok(out)
+    } else {
+        leaf_offsets(payload)
+    }
+}
+
+/// Subkey nk offsets from a single leaf cell (lf, lh, or li).
+fn leaf_offsets(payload: &[u8]) -> Result<Vec<u32>, LogicalError> {
+    match signature_of(payload) {
+        Some(s) if s == *b"lh" => Ok(HashLeaf::parse(payload)?
+            .entries
+            .iter()
+            .map(|e| e.key_offset)
+            .collect()),
+        Some(s) if s == *b"lf" => Ok(FastLeaf::parse(payload)?
+            .entries
+            .iter()
+            .map(|e| e.key_offset)
+            .collect()),
+        Some(s) if s == *b"li" => Ok(IndexLeaf::parse(payload)?.offsets),
+        found => Err(LogicalError::Format(FormatError::BadSignature {
+            structure: "subkey leaf",
+            found: found.map_or([0, 0, 0, 0], |s| [s[0], s[1], 0, 0]),
+        })),
+    }
+}
+
+fn signature_of(payload: &[u8]) -> Option<[u8; 2]> {
+    payload.get(0..2).map(|s| [s[0], s[1]])
 }
