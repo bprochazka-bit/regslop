@@ -4,7 +4,7 @@ This file is the single source of truth for interfaces between components.
 All agents read this file. Only the spec agent writes to it.
 Changes require a PR labeled `contracts` and a version bump.
 
-**Current version: 0.1.2**
+**Current version: 0.1.3**
 
 ## Versioning
 
@@ -150,6 +150,22 @@ agents report one: offline hives do not always expose a readable SACL and
 offreg may omit it, so a one-sided SACL is not a semantic difference. See
 `docs/adr/0003-sddl-security.md` for the normalization rules and rationale.
 
+A key created via `POST /key/create` without an explicit descriptor (no
+`POST /key/security` has run against it) MUST carry this default, observed
+from offreg (offreg-10.0.22621, freshly created hive) and ratified here as
+the contract:
+
+```
+O:BAG:BAD:(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;WD)(A;CI;KR;;;RC)
+```
+
+That is owner and group Administrators (`BA`), and a DACL granting SYSTEM
+(`SY`) and Administrators (`BA`) full control (`KA`) plus Everyone (`WD`) and
+Restricted Code (`RC`) read (`KR`), all container-inheritable (`CI`). Because
+the default lives in the owner/group/DACL triple, it IS asserted by the
+`semantic` tag under the normalization above (it is not excluded the way
+`last_write` is). An explicit `POST /key/security` replaces the default.
+
 ### Diagnostics
 
 ```
@@ -287,6 +303,10 @@ pass are warnings, not errors.
 
 ## Change Log
 
+- 0.1.3 (minor): ratify the default security descriptor for a key created
+  without an explicit one (offreg-observed value, see the Security section
+  and issue #11). It is asserted by the `semantic` tag via the O/G/D
+  normalization. Additive only; no breaking change.
 - 0.1.2 (minor): add error code `KEY_HAS_CHILDREN` (non-recursive delete of
   a key with subkeys; was surfaced as `INTERNAL`). Clarify `/key/security`
   read vs write is by HTTP method (GET vs POST), not by `sddl` presence.
