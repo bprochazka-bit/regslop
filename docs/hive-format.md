@@ -252,6 +252,31 @@ All leaf forms store entries sorted by subkey name, case-insensitive, so
 binary search is valid (CONTRACTS invariant 17). For ri, each referenced
 leaf is internally sorted and the leaves are in key order.
 
+#### What the differ compares (semantic vs bytewise)
+
+The on-disk subkey-list TYPE (lf vs lh vs li vs ri) and the 4-byte name
+hint/hash each entry carries are NOT part of the canonical JSON form
+(CONTRACTS "Canonical JSON Form"), which records subkey names and their
+recursive contents. They are therefore invisible to the `semantic` differ
+and to the `structural` checks the harness runs today (only invariant 17,
+list sortedness, is observable from a dump; invariant 11 promotion is
+skipped). They affect only `bytewise` equality, which is a warning rather
+than a failure and is not evaluated while an agent backend emits no regf
+bytes.
+
+What this means for an implementation (libreg):
+
+- For `semantic`, the gating tag, a created subkey needs the correct
+  logical form only: it appears under its parent with the right name,
+  security, and values, and siblings stay name-sorted (invariant 17). The
+  list type and the hash bytes do not matter.
+- For `bytewise` parity with offreg, write an `lh` leaf for the v1.5+ hives
+  this project targets (minor version > 4), entries sorted by uppercased
+  name; a single subkey is a one-element lh. Exact cell placement (which
+  bin, grow vs add) is an allocator choice, not specified here.
+- The exact non-ASCII name-hash upcasing (`RtlUpcaseUnicodeChar`) is a
+  bytewise-only detail (issue #22); ASCII names already hash correctly.
+
 #### Promotion threshold (approximate; confirm against offreg)
 
 CONTRACTS invariant 11 states "lf/lh for < 1015 entries, ri for > 1015".
