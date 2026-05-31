@@ -8,13 +8,15 @@ real Windows hives under `tests/corpus/hives/` (gitignored, separately
 licensed) these are safe to track in git.
 
 They serve as canonical-form fixtures pinning what offreg emits on disk, used
-to answer issues #22 and #23 (lh hashing and single-subkey create layout).
+to answer issues #22, #23, and #34 (lh hashing, single-subkey create layout,
+and the lh -> ri promotion boundary).
 
 ## How they were made
 
 Live agent on `vmreg.lan:7879`: `/hive/create`, then `/key/create` per key,
-then `/hive/save`. Format is v1.5 (offreg default), 8192 bytes each (4096 base
-block + one 4096 hbin).
+then `/hive/save`. Format is v1.5 (offreg default). The small fixtures are 8192
+bytes each (4096 base block + one 4096 hbin); `ref_ri.hiv` is larger because it
+spans many hbins.
 
 | File                | Contents                              | Notes                                   |
 |---------------------|---------------------------------------|-----------------------------------------|
@@ -22,6 +24,7 @@ block + one 4096 hbin).
 | `ref_multi.hiv`     | root + `Alpha`..`Foxtrot` (6 ASCII)   | multi-entry `lh`, shared sk refcount 7  |
 | `ref_latin1.hiv`    | root + `Café` (e-acute, U+00E9)       | KEY_COMP_NAME, Latin-1 byte 0xE9        |
 | `ref_wide.hiv`      | root + `Omega-mega` (Omega, U+03A9)   | uncompressed UTF-16LE name              |
+| `ref_ri.hiv`        | root + `k00000`..`k01099` (1100 keys) | `ri` index of 3 `lh` leaves [507,507,86] (issue #34) |
 
 (The `ref_wide.hiv` subkey name is the Greek capital Omega followed by `mega`;
 written here without the literal glyph to keep this file ASCII.)
@@ -33,9 +36,10 @@ a80c04e394ae745746f1215d33d09edae1a5de5b7898f95e31249b90ce3abd1e  ref_one_ascii.
 2d4dadc1d44d9f1e04f1b86eaf8f93d23cb626e9d05e39024b0ae284a65c3b71  ref_multi.hiv
 8e6d93b5a4c616f53a369daaa77d25244a4ee407bb5f92c2a35543565fe3b253  ref_latin1.hiv
 6714c7c43553971366231e15cd199bd2cefda7d5384fc44851ad0fab9b5d9345  ref_wide.hiv
+2712190d3a8f8bc20d7219158a378aa85b6bb39339a79529e7679a2db06156d9  ref_ri.hiv
 ```
 
-## Key facts these fixtures pin (see issues #22, #23)
+## Key facts these fixtures pin (see issues #22, #23, #34)
 
 - A freshly created v1.5 hive uses an `lh` (hash leaf) subkey list even for a
   single subkey; offreg never emits `lf` here.
@@ -48,6 +52,11 @@ a80c04e394ae745746f1215d33d09edae1a5de5b7898f95e31249b90ce3abd1e  ref_one_ascii.
   distinguishes full-Unicode upcase from ASCII-only upcase.
 - offreg sets KEY_COMP_NAME (1 byte/char) iff every char is <= U+00FF, else the
   name is stored uncompressed as UTF-16LE.
+- A single `lh` leaf holds at most 507 entries (one hbin of cell space,
+  `(4096 - 32 - 8) / 8`). The 508th subkey promotes the leaf to an `ri` index of
+  `lh` leaves; leaves fill sequentially (each caps at 507), so the Nth leaf
+  appears at count `507*(N-1) + 1`. This corrects invariant 11's "~1015", which
+  is actually the second split, not the first.
 
 ## License
 
