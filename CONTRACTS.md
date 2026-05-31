@@ -4,7 +4,7 @@ This file is the single source of truth for interfaces between components.
 All agents read this file. Only the spec agent writes to it.
 Changes require a PR labeled `contracts` and a version bump.
 
-**Current version: 0.1.5**
+**Current version: 0.1.6**
 
 ## Versioning
 
@@ -38,6 +38,9 @@ interchangeably.
 
 - HTTP/1.1 over TCP
 - JSON request and response bodies, `Content-Type: application/json`
+- Reads use GET and writes use POST. Both carry their parameters in the JSON
+  request body, never the query string. Read requests therefore carry a GET
+  body; this is intentional for the closed harness transport (see ADR 0001).
 - Default ports: Linux agent 7878, Windows agent 7879
 - All endpoints return `{ "ok": bool, "error": null | string, "data": ... }`
 - Errors include a stable `code` field for programmatic matching
@@ -322,6 +325,10 @@ is distinct from `TYPE_MISMATCH`: the latter applies when a well-formed
 
 ## Change Log
 
+- 0.1.6 (patch): confirm the read-request transport: reads are GET and carry
+  their parameters in the JSON request body, not the query string (so GET
+  requests carry a body). Documents existing behavior; rationale and the
+  GET-body caveat added to ADR 0001. No wire change.
 - 0.1.5 (patch): clarify `/key/create` semantics: creates all missing
   intermediate components (RegCreateKeyEx-style), reuses existing
   intermediates, and returns `KEY_EXISTS` only when the leaf already exists.

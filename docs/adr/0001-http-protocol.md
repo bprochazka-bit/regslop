@@ -66,6 +66,34 @@ Cons: impossible. offreg.dll runs on Windows; libreg is a Linux library.
 The whole point of the architecture is that the oracle is a real Windows
 process. Rejected as infeasible.
 
+### Read parameters in the query string vs the request body
+
+Reads (`/key/list`, `/key/info`, `/value/get`, `/key/security` GET, the
+`/hive/*` diagnostics) need parameters: a handle, a path, sometimes a value
+name. Two ways to carry them.
+
+Query string: the conventional REST shape, and it sidesteps the "GET with a
+body" oddity (RFC 7231 leaves a GET body's semantics undefined, and some
+HTTP stacks drop or forbid it).
+
+Request body: every endpoint, read or write, then takes the same JSON object
+under the same envelope, so a request differs from its write counterpart
+only by method. One schema per endpoint, no separate query-string encoding
+to define, escape, and keep in sync across both agents and the harness.
+Paths contain backslashes and value names can be empty or contain arbitrary
+characters, which query-string encoding handles but adds a second escaping
+layer the body avoids.
+
+We chose the body. This is a closed transport: two custom agents on a LAN
+with the harness as the only client, so there are no intermediary proxies or
+caches to strip a GET body. The one place it bites is client libraries that
+forbid GET bodies (the harness uses `ureq`, whose typed builder refuses
+them), so the harness sends reads through a hand-built `http::Request`; this
+is a client-side detail, not a contract change. Agents route reads on path,
+except `/key/security` which routes on method per CONTRACTS 0.1.2 (GET reads,
+POST writes). If a future transport must cross a boundary that mangles GET
+bodies, revisit this and move read params to the query string then.
+
 ## Consequences
 
 - Large binary payloads (hive files, security descriptors, big REG_BINARY
