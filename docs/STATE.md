@@ -1,8 +1,10 @@
 # Spec Agent STATE
 
-Last session: 2026-05-31 (triaged the two later library questions #22/#23 as
-corpus-gated bytewise items, PR #25; recorded downstream conformance status).
-Prior session cleared the inbound queue: 0.1.3 through 0.1.6 plus ADR 0004.
+Last session: 2026-05-31 (the synthetic offreg corpus landed; used it to
+resolve and CLOSE #22/#23 and my open minor-version question, PR #32, and
+to validate the 0.1.6 default SD against real offreg bytes). Earlier today:
+triaged #22/#23 as bytewise (PR #25); cleared the inbound queue 0.1.3-0.1.6
+plus ADR 0004.
 
 ## CONTRACTS.md
 
@@ -131,46 +133,48 @@ Resolved/non-action (recorded so they are not re-litigated):
 - harness Q3 (SACL-present security sub-tag): deferred to the harness agent
   per ADR 0003; revisit with the corpus loader.
 
-## Later library questions (#22, #23): triaged, corpus-gated, non-blocking
+## Later library questions (#22, #23): RESOLVED and CLOSED
 
-Filed by the library agent after the original queue. Both turned out to be
-bytewise-only and do NOT block the `semantic` milestone. Triaged in PR #25,
-which added a "What the differ compares (semantic vs bytewise)" subsection to
-docs/hive-format.md. Both issues left OPEN as corpus-gated bytewise items.
+Filed by the library agent. First triaged as bytewise-only (PR #25), then
+fully answered from the synthetic offreg corpus (PR #29) once it landed. I
+parsed the fixtures and verified each claim against the bytes; findings in
+docs/hive-format.md 3.3/3.4 via PR #32. Both issues closed.
 
-- **#23 single-subkey create canonical form.** Answered for `semantic`: a
-  created subkey needs only the correct logical form (name, KEY_COMP_NAME for
-  ASCII, parent = root, security resolving to the right SDDL via a shared sk
-  refcount bump, siblings name-sorted, parent subkey_count = 1). The on-disk
-  list type (write `lh` for v1.5+) and cell placement are bytewise-only; the
-  canonical form carries names, not list type or offsets, and the harness
-  skips invariant 11. Placement is an allocator choice, not the spec's to
-  dictate. So step 4 is unblocked for semantic-green; exact byte parity is
-  deferred to bytewise (a warning, n/a until libreg emits regf bytes).
-- **#22 lh non-ASCII name hash.** Bytewise-only; the hash never appears in
-  the canonical form. ASCII names already hash correctly. The exact
-  RtlUpcaseUnicodeChar table / Latin-1-to-UTF-16 question needs an
-  offreg-produced reference hive with non-ASCII names. Corpus-gated.
+- **#23 single-subkey create canonical form.** From ref_one_ascii.hiv /
+  ref_multi.hiv: offreg emits an `lh` even for one subkey (never `lf`); cells
+  laid out root nk, sk, lh, child nk in the root hbin; children share the
+  root sk (refcount rises per key); KEY_COMP_NAME per the <= U+00FF rule;
+  root nk subkey_count/list-offset updated. For `semantic` only the logical
+  form matters; the rest is bytewise.
+- **#22 lh non-ASCII name hash.** From ref_latin1.hiv (`Café`): hash =
+  (hash*37 + RtlUpcaseUnicodeChar(unit)) & 0xFFFFFFFF over UTF-16 units, full
+  Unicode upcase (0x352f57 needs U+00E9 -> U+00C9; ASCII-only would give
+  0x352f77). Compressed Latin-1 names expand byte -> UTF-16 unit before
+  hashing. Bytewise-only; ASCII was already correct.
+
+Bonus cross-check: the offreg sk descriptor is 144 bytes and decodes to
+exactly the 0.1.6 ratified default, byte-content-identical to the library SD
+codec (PR #21). offreg's body order is DACL, owner, group (noted for
+bytewise; the library codec currently emits owner-first).
 
 ## Open spec questions (mine; still NOT resolved; do not guess in code)
 
-1. Invariant 11 promotion threshold "1015". Public sources checked
-   2026-05-30 (Project Zero regf writeup, Eric Zimmerman's parser) put the
-   lh/lf leaf maximum near 1013, with li splitting around 508, so "1015" is
-   close but off by a couple and version dependent; sources also disagree
-   on the exact number. Decision: treat the leaf->ri split point as
-   offreg-defined. libreg matches offreg (libreg rule 4); the harness
-   2000-subkey test (libreg step 8) establishes the real boundary. Did NOT
-   change the number in CONTRACTS.md. Revisit once the Windows agent can
-   dump a wide key and the harness reports the actual split count, then
-   replace "1015" with the empirical value or with "offreg-defined".
+1. STILL OPEN, now requested as issue #34. Invariant 11 promotion threshold
+   "1015". Public sources put the lh/lf leaf maximum near 1013, li splitting
+   around 508; "1015" is close but off and version dependent. The synthetic
+   corpus did NOT answer this: ref_wide.hiv is a wide NAME, not a wide KEY.
+   Filed #34 asking the Windows agent for a ~1100-subkey fixture that forces
+   the lh -> ri split; then replace "1015" with the empirical offreg count or
+   restate it as offreg-defined. Did NOT change the number in CONTRACTS.md.
 
-2. Dual-log minor version. CONTRACTS "Transaction Log Behavior" says "v1.5
-   hives (Windows 8.1+)". The on-disk base-block minor version for dual
-   logging is 6, not 5. Confirm what libreg actually writes against a
-   corpus hive before pinning, then reconcile the CONTRACTS wording. Held
-   pending corpus availability (tests/corpus is gitignored / downloaded
-   separately).
+2. RESOLVED from the corpus (PR #32). offreg-10.0.22621 writes minor version
+   5 (v1.5) for a freshly created and saved hive (all four
+   tests/corpus/synthetic fixtures: major 1, minor 5, seq 1/1, no logs).
+   libreg should write minor 5 to match (Hard Rule 4); consistent with
+   CONTRACTS "v1.5 hives". Minor 6 is the live-kernel dual-log on-disk
+   variant offreg does not produce, so it is out of differential scope and
+   relevant only to libreg's own recovery tag (ADR 0004). No CONTRACTS change
+   needed; recorded in hive-format.md Versions.
 
 3. class_name in the canonical form. The canonical schema includes
    `class_name`, but no v0.1 operation sets a key class. Either keep it

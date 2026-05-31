@@ -79,11 +79,17 @@ spanning bytes 0..507, not 508 separate dwords.
 - minor 3: Windows XP era, single .LOG recovery.
 - minor 4: Windows Vista/7.
 - minor 5: Windows 8.
-- minor 6: Windows 8.1+ with dual logging (.LOG1/.LOG2). CONTRACTS calls
-  this "v1.5 hives" loosely; the on-disk minor version for dual logs is 6.
-  The dual-log recovery scheme (CONTRACTS "Transaction Log Behavior") is
-  the one to target for v0.1. Confirm the exact minor version libreg writes
-  against the corpus before pinning.
+- minor 6: Windows 8.1+ with dual logging (.LOG1/.LOG2).
+
+RESOLVED against the corpus: offreg-10.0.22621 writes minor version **5**
+for a freshly created and saved hive (all four `tests/corpus/synthetic/*.hiv`
+base blocks read minor 5, major 1, sequence 1/1, no logs). So the differ's
+oracle emits v1.5, and libreg should write minor 5 to match (Hard Rule 4);
+this is consistent with CONTRACTS "v1.5 hives". Minor 6 is the live-kernel
+on-disk variant for active dual-log hives; offreg's `ORSaveHive` does not
+produce it, and offreg writes no transaction logs at all
+(agents/windows/CLAUDE.md), so minor 6 is out of scope for the differential
+tests and relevant only to libreg's own recovery tag (ADR 0004).
 
 ### offreg fingerprint (informative)
 
@@ -228,7 +234,21 @@ shared by a single sk cell with the refcount summed (libreg step 10).
 
 On the wire the descriptor transits as SDDL (CONTRACTS "Security");
 conversion to/from the self-relative binary form is the agent's job. See
-ADR 0003 if/when written for why SDDL over binary on the wire.
+ADR 0003 for why SDDL over binary on the wire.
+
+The default descriptor offreg gives a freshly created key, ratified in
+CONTRACTS 0.1.6 (issue #11), is verified byte-for-content against the
+synthetic corpus (the `sk` cell in every `tests/corpus/synthetic/*.hiv`):
+144 bytes, control `0x8004` (SE_SELF_RELATIVE | SE_DACL_PRESENT, no SACL),
+owner and group `S-1-5-32-544` (Administrators), and a 4-ACE DACL, each
+container-inheritable: `S-1-5-18` KEY_ALL_ACCESS, `S-1-5-32-544`
+KEY_ALL_ACCESS, `S-1-1-0` KEY_READ, `S-1-5-12` KEY_READ. That is exactly
+`O:BAG:BAD:(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;WD)(A;CI;KR;;;RC)`.
+
+For `bytewise` parity, note offreg's body order: the header is followed by
+the DACL (offset 0x14), then the owner SID, then the group SID. A producer
+that lays owner/group before the DACL yields the same SDDL but different
+bytes, which `semantic` accepts and `bytewise` does not.
 
 ### 3.4 Subkey list cells: lf, lh, li, ri
 
@@ -238,8 +258,10 @@ A key's subkeys are indexed by a list cell pointed to from the nk
 - `lf` (0x666c) fast leaf: array of (subkey nk offset, 4-byte name hint).
   The hint is the first 4 ASCII chars of the subkey name.
 - `lh` (0x686c) hash leaf: array of (subkey nk offset, 4-byte name hash).
-  Used by modern hives (minor version > 4). The hash is a rolling hash of
-  the uppercased name (see Suhanov, "Hash leaf").
+  Used by modern hives (minor version > 4). The hash is the rolling fold
+  `hash = (hash*37 + RtlUpcaseUnicodeChar(unit)) & 0xFFFFFFFF` over the
+  name's UTF-16 code units; see "lh name hash (verified)" below for the
+  upcasing detail.
 - `li` (0x696c) index leaf: array of subkey nk offsets, no hint/hash.
   CONTRACTS invariant 11 expects li "only when loading old hives"; libreg
   SHOULD write lh.
@@ -275,7 +297,45 @@ What this means for an implementation (libreg):
   name; a single subkey is a one-element lh. Exact cell placement (which
   bin, grow vs add) is an allocator choice, not specified here.
 - The exact non-ASCII name-hash upcasing (`RtlUpcaseUnicodeChar`) is a
-  bytewise-only detail (issue #22); ASCII names already hash correctly.
+  bytewise-only detail; now pinned below from the corpus (issue #22).
+
+#### Single-subkey create: what offreg emits (verified, issue #23)
+
+Verified against `tests/corpus/synthetic/ref_one_ascii.hiv` and
+`ref_multi.hiv` (offreg-10.0.22621). Creating subkeys under the root of a
+fresh hive produces:
+
+- An `lh` list always, even for a single subkey (offreg never emits `lf`
+  for a v1.5 create). A second subkey grows the same lh, kept name-sorted.
+- Cells allocated in the root's hbin in the order: root `nk`, `sk`, `lh`,
+  then the child `nk`(s). (Placement is offreg's allocator behavior; it
+  matters only for `bytewise`.)
+- Each child `nk` shares the root's `sk`: its security offset points at the
+  root sk and the sk reference count rises by one per key (refcount 2 for
+  one child, 7 for six). offreg allocates no per-key sk when the descriptor
+  is identical.
+- The child `nk` sets `KEY_COMP_NAME` for a compressible name (see the hash
+  note below), parent = root nk offset. The root `nk` gets
+  `subkey_count = N` and its subkeys-list offset pointing at the lh.
+
+#### lh name hash (verified, issue #22)
+
+Verified against `ref_latin1.hiv` (subkey `Café`) and `ref_wide.hiv` (subkey
+`{Omega}mega`). The hash folds the name's UTF-16 code units with
+`hash = (hash*37 + RtlUpcaseUnicodeChar(unit)) & 0xFFFFFFFF`, using the full
+Unicode upcase table, not ASCII-only:
+
+- `Café` hashes to 0x352f57, which requires upcasing the code unit U+00E9
+  (e-acute) to U+00C9 (E-acute). ASCII-only upcasing would leave U+00E9 and
+  yield 0x352f77, so the fixture distinguishes the two.
+- A `KEY_COMP_NAME` (compressed, 1 byte/char) name is expanded byte to
+  UTF-16 code unit before hashing: `Café` is stored as the Latin-1 bytes
+  `43 61 66 e9` but hashed as the units U+0043 U+0061 U+0066 U+00E9.
+- offreg sets `KEY_COMP_NAME` iff every character is <= U+00FF; otherwise the
+  name is stored uncompressed as UTF-16LE (verified by `ref_wide.hiv`, whose
+  Greek-capital-Omega name clears the flag).
+
+ASCII names were already correct; this pins the non-ASCII case.
 
 #### Promotion threshold (approximate; confirm against offreg)
 
