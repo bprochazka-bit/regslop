@@ -4,7 +4,7 @@ This file is the single source of truth for interfaces between components.
 All agents read this file. Only the spec agent writes to it.
 Changes require a PR labeled `contracts` and a version bump.
 
-**Current version: 0.1.4**
+**Current version: 0.1.5**
 
 ## Versioning
 
@@ -90,6 +90,15 @@ GET  /key/info      { "handle", "path" }
 
 Path separator is `\\` (escaped backslash in JSON, literal backslash in path).
 Paths never start with a separator. Empty string `""` means the hive root.
+
+`/key/create` MUST create every missing component along `path`, not only the
+leaf (RegCreateKeyEx semantics). Existing intermediate components are reused,
+not an error. It MUST return `KEY_EXISTS` only when the final (leaf)
+component already exists; a create that merely materializes missing
+intermediates and a new leaf succeeds. offreg's `ORCreateKey` does not create
+intermediates on its own, so the Windows agent creates each level in turn to
+honor this. Settled and green on the live VM (harness `deep_key_create` and
+`key_create_existing_is_error`).
 
 `/key/rename` MUST preserve the renamed key's values, class name, security,
 and its entire subkey subtree (names, values, security). It MAY update the
@@ -313,6 +322,10 @@ is distinct from `TYPE_MISMATCH`: the latter applies when a well-formed
 
 ## Change Log
 
+- 0.1.5 (patch): clarify `/key/create` semantics: creates all missing
+  intermediate components (RegCreateKeyEx-style), reuses existing
+  intermediates, and returns `KEY_EXISTS` only when the leaf already exists.
+  Documents existing behavior already green on the live VM; no wire change.
 - 0.1.4 (minor): add error code `BAD_REQUEST` for a malformed request
   (invalid JSON, missing/wrong-typed required field, unknown constant);
   previously surfaced as `INTERNAL`. Lets the harness tell caller/test
