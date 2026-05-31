@@ -1,0 +1,14 @@
+[package]
+name = "libreg"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform Windows Registry hive library"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "libreg"
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
