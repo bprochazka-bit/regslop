@@ -14,6 +14,7 @@ pub mod lh;
 pub mod nk;
 pub mod security_descriptor;
 pub mod sk;
+pub mod vk;
 
 /// Errors raised while parsing or serializing on-disk structures.
 ///

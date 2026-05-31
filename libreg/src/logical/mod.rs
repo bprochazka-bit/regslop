@@ -15,6 +15,7 @@
 pub mod index;
 pub mod key;
 pub mod security;
+pub mod value;
 
 use crate::alloc::HiveImage;
 use crate::format::base_block::{BaseBlock, BASE_BLOCK_SIZE};
@@ -108,6 +109,37 @@ impl Hive {
             .into_iter()
             .map(|(_, name)| name)
             .collect())
+    }
+
+    /// Set the value `name` on the key at `path` to `data` of type
+    /// `data_type` (a REG_* code; data is raw bytes). Creates the value or
+    /// replaces an existing one of that name. The default value is name `""`.
+    pub fn set_value(
+        &mut self,
+        path: &str,
+        name: &str,
+        data_type: u32,
+        data: &[u8],
+    ) -> Result<(), LogicalError> {
+        let off = self.resolve(path)?.ok_or(LogicalError::NotFound)?;
+        value::set(&mut self.image, off, name, data_type, data)
+    }
+
+    /// Get the value `name` on the key at `path` as `(type, data)`, or `None`
+    /// when the key has no such value.
+    pub fn get_value(
+        &self,
+        path: &str,
+        name: &str,
+    ) -> Result<Option<(u32, Vec<u8>)>, LogicalError> {
+        let off = self.resolve(path)?.ok_or(LogicalError::NotFound)?;
+        value::get(&self.image, off, name)
+    }
+
+    /// Value names on the key at `path`, in stored order.
+    pub fn values(&self, path: &str) -> Result<Vec<String>, LogicalError> {
+        let off = self.resolve(path)?.ok_or(LogicalError::NotFound)?;
+        value::list_names(&self.image, off)
     }
 
     /// Offset of the key at `path`, or `None` if any component is missing.
@@ -398,5 +430,125 @@ mod tests {
             assert!(hive.resolve(node).unwrap().is_some());
         }
         assert_loadable(&hive);
+    }
+
+    // REG_* type codes used by the value tests.
+    const REG_SZ: u32 = 1;
+    const REG_BINARY: u32 = 3;
+    const REG_DWORD: u32 = 4;
+
+    #[test]
+    fn set_and_get_inline_value() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("Software").unwrap();
+        hive.set_value("Software", "Count", REG_DWORD, &7u32.to_le_bytes())
+            .unwrap();
+
+        let (ty, data) = hive.get_value("Software", "Count").unwrap().unwrap();
+        assert_eq!(ty, REG_DWORD);
+        assert_eq!(data, 7u32.to_le_bytes());
+
+        // 4-byte data is stored inline: no extra data cell allocated, so the
+        // key's value list points straight at the vk.
+        assert_eq!(hive.values("Software").unwrap(), vec!["Count"]);
+        let nk = key::read_nk(hive.image(), hive.resolve("Software").unwrap().unwrap()).unwrap();
+        assert_eq!(nk.value_count, 1);
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn set_and_get_out_of_line_value() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+        // Larger than 4 bytes: stored in a separate data cell.
+        let blob: Vec<u8> = (0..64u8).collect();
+        hive.set_value("K", "Blob", REG_BINARY, &blob).unwrap();
+
+        let (ty, data) = hive.get_value("K", "Blob").unwrap().unwrap();
+        assert_eq!(ty, REG_BINARY);
+        assert_eq!(data, blob);
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn default_value_uses_empty_name() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+        hive.set_value("K", "", REG_SZ, b"hi\0").unwrap();
+        let (ty, data) = hive.get_value("K", "").unwrap().unwrap();
+        assert_eq!(ty, REG_SZ);
+        assert_eq!(data, b"hi\0");
+        assert_eq!(hive.values("K").unwrap(), vec![""]);
+    }
+
+    #[test]
+    fn setting_same_name_replaces() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+        // Start inline, then replace with out-of-line data of a new type.
+        hive.set_value("K", "V", REG_DWORD, &1u32.to_le_bytes())
+            .unwrap();
+        let long: Vec<u8> = vec![0xEE; 40];
+        hive.set_value("K", "V", REG_BINARY, &long).unwrap();
+
+        let (ty, data) = hive.get_value("K", "V").unwrap().unwrap();
+        assert_eq!(ty, REG_BINARY);
+        assert_eq!(data, long);
+        // Still a single value, not a duplicate.
+        assert_eq!(hive.values("K").unwrap(), vec!["V"]);
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn value_lookup_is_case_insensitive() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+        hive.set_value("K", "Path", REG_SZ, b"x\0").unwrap();
+        assert!(hive.get_value("K", "PATH").unwrap().is_some());
+        assert!(hive.get_value("K", "path").unwrap().is_some());
+        // Re-setting under different casing replaces rather than duplicates.
+        hive.set_value("K", "PATH", REG_SZ, b"y\0").unwrap();
+        assert_eq!(hive.values("K").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn multiple_values_on_one_key() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+        hive.set_value("K", "a", REG_DWORD, &1u32.to_le_bytes())
+            .unwrap();
+        hive.set_value("K", "b", REG_BINARY, &[9u8; 50]).unwrap();
+        hive.set_value("K", "c", REG_DWORD, &3u32.to_le_bytes())
+            .unwrap();
+        assert_eq!(hive.values("K").unwrap(), vec!["a", "b", "c"]);
+        assert_eq!(
+            hive.get_value("K", "b").unwrap().unwrap(),
+            (REG_BINARY, vec![9u8; 50])
+        );
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn missing_value_is_none() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+        assert_eq!(hive.get_value("K", "nope").unwrap(), None);
+        assert_eq!(hive.values("K").unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn values_are_byte_deterministic() {
+        fn build() -> Vec<u8> {
+            let mut hive = Hive::new_empty();
+            hive.create_key("Software\\App").unwrap();
+            hive.set_value("Software\\App", "Mode", REG_DWORD, &2u32.to_le_bytes())
+                .unwrap();
+            hive.set_value("Software\\App", "Name", REG_SZ, b"x\0")
+                .unwrap();
+            hive.set_value("Software\\App", "Data", REG_BINARY, &[1u8; 32])
+                .unwrap();
+            hive.to_file()
+        }
+        assert_eq!(build(), build(), "Hard Rule 5: reproducible bytes");
     }
 }
