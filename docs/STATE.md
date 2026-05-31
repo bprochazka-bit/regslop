@@ -1,19 +1,22 @@
 # Spec Agent STATE
 
-Last session: 2026-05-30
+Last session: 2026-05-31 (wrap-up after the implementation agents conformed
+to 0.1.2 and went green against the live offreg VM).
 
 ## CONTRACTS.md
+
+Current on main: **0.1.2** (all spec PRs merged). No bump this session.
 
 - 0.1.0: initial (merged).
 - 0.1.1 PATCH: invariant clarifications + the KEY_COMP_NAME typo fix
   (merged, PR #2).
-- 0.1.2 MINOR: resolves the Windows agent's spec requests (PR #4, branch
-  `spec/contracts-0.1.2`). Adds error code KEY_HAS_CHILDREN; clarifies
-  /key/security GET vs POST; defines canonical SDDL normalization (see ADR
-  0003); specifies /key/rename subtree preservation and the harness
-  last_write exclusion under a renamed path; sharpens the sort comparator.
+- 0.1.2 MINOR: resolves the Windows agent's spec requests (merged, PR #4).
+  Adds error code KEY_HAS_CHILDREN; clarifies /key/security GET vs POST;
+  defines canonical SDDL normalization (see ADR 0003); specifies
+  /key/rename subtree preservation and the harness last_write exclusion
+  under a renamed path; sharpens the sort comparator.
 
-## Windows agent requests (resolved 2026-05-30)
+## Windows agent requests (resolved 2026-05-30, in 0.1.2)
 
 Source: agents/windows/STATE.md "Spec items to raise" + assumptions.
 
@@ -28,47 +31,93 @@ Source: agents/windows/STATE.md "Spec items to raise" + assumptions.
   ordinal, casing preserved; siblings are case-insensitive-unique. In
   0.1.2.
 
-Downstream work this creates (for the owning agents, not the spec agent):
-library emits KEY_HAS_CHILDREN and may preserve rename timestamps; harness
-implements the last_write exclusion and the SDDL normalization; Windows
-agent switches to method-based security dispatch and maps the
-key-has-children case to the new code.
+## Issue #6 downstream work: ALL MERGED
 
-## Done this session
+The work the 0.1.2 decisions created for the owning agents has landed:
+
+- Windows agent: method-based /key/security dispatch + KEY_HAS_CHILDREN
+  mapping (PR #7); no spurious SACL stamped on rename (PR #8).
+- Harness: last_write exclusion and ADR-0003 SDDL normalization
+  (src/differ/sddl.rs), conformed to 0.1.2 (PR #9).
+- Linux agent: emits KEY_HAS_CHILDREN; conformed to 0.1.2 (PR #9).
+- Live VM run: harness + Linux agent green against offreg on the shared
+  Windows VM (PR #10). `semantic` is GREEN. Issue #6 can be closed.
+
+## Done this session (all merged to main)
 
 - Verified CONTRACTS.md invariants against Suhanov's "Windows registry file
   format specification" and Google Project Zero's regf writeup (both
   retrieved 2026-05-30).
-- Wrote docs/hive-format.md: base block, hbin, cell types
+- docs/hive-format.md: base block, hbin, cell types
   (nk, vk, sk, lf, lh, li, ri, db), value list, encoding rules, and a map
-  from each CONTRACTS invariant to its documenting section.
-- Wrote docs/adr/0001-http-protocol.md (HTTP+JSON over gRPC for v0.1).
-- Wrote docs/adr/0002-canonical-form.md (sorted keys, dropped sub-second
-  precision, base64).
-- Wrote docs/adr/README.md (ADR index).
-- Wrote .github issue templates (spec-question, contract-change,
-  differ-failure) and PULL_REQUEST_TEMPLATE.md.
+  from each CONTRACTS invariant to its documenting section. (PR #1)
+- docs/adr/0001-http-protocol.md (HTTP+JSON over gRPC for v0.1). (PR #1)
+- docs/adr/0002-canonical-form.md (sorted keys, dropped sub-second
+  precision, base64). (PR #1)
+- docs/adr/0003-sddl-security.md (SDDL on the wire, normalized binary diff,
+  SACL compared only when both sides report one). (PR #5)
+- docs/adr/README.md (ADR index). (PR #1, updated PR #5)
+- .github issue templates (spec-question, contract-change, differ-failure)
+  and PULL_REQUEST_TEMPLATE.md. (PR #1)
+- CONTRACTS 0.1.1 (PR #2) and 0.1.2 (PR #4); created the `contracts` and
+  `spec` labels.
+- Issue #6: decision table answering the Windows agent, with downstream
+  work assigned per subtree. (All downstream PRs now merged; see above.)
 
-## Verification findings (feed the 0.1.1 PATCH)
+## Inbound spec questions from implementation agents (NEED A DECISION)
 
-Confirmed correct against the references: invariants 1, 2, 5, 6, 9
-(header = 32), 10, 12 (16344, minor > 3), 13, 14, 15, 17; nk/vk/sk/db
-layouts; KEY_COMP_NAME = 0x0020; checksum quirks (0 -> 1, 0xFFFFFFFF ->
-0xFFFFFFFE).
+New since 0.1.2; raised in agents/linux/spec-questions.md and
+tests/harness/spec-questions.md. These are the spec agent's queue. None
+invent wire endpoints; each ships a provisional behavior so the harness
+stays green, but they want the contract pinned.
 
-Clarifications / typos to fix in CONTRACTS.md (all PATCH, no wire change):
+1. **Default security descriptor for a fresh key (issue #11, `contracts`).**
+   CONTRACTS.md does not specify the SDDL a newly created key inherits. The
+   first live differential run showed the old 2-ACE placeholder diverging
+   from offreg on every key. The Linux agent captured offreg's actual
+   default from the VM and set DEFAULT_SDDL to match:
+   `O:BAG:BAD:(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;WD)(A;CI;KR;;;RC)`
+   (SYSTEM full, Administrators full, Everyone read, Restricted Code read,
+   all container-inheritable). `semantic` is GREEN with it. ACTION: ratify
+   this (or a deliberately chosen default) in CONTRACTS.md as 0.1.3. This is
+   the highest-priority open item: a stand-in MemBackend default is in the
+   wire path with no contract behind it.
 
-1. Invariant 3 checksum: "XOR of dwords 0..507" is imprecise. It is the
-   XOR of the first 127 little-endian u32 values (bytes 0..507), plus the
-   0 -> 1 and 0xFFFFFFFF -> 0xFFFFFFFE quirks. Reword.
-2. Invariant 4: "Total size (base block dword 40)" is the HIVE BINS DATA
-   SIZE and excludes the 4096-byte base block. Clarify wording.
-3. Invariant 9: state the hbin header is 32 bytes explicitly.
-4. Invariant 16: "VALUE_COMP_NAME" is a typo; the nk name-compression flag
-   is KEY_COMP_NAME (0x0020). (VALUE_COMP_NAME exists separately as the vk
-   flag for value names.) Fix.
+2. **BAD_REQUEST error code (linux Q2).** No code for a malformed request
+   (missing field / bad JSON); the agent uses INTERNAL provisionally. A
+   dedicated code would let the harness tell caller bugs from agent bugs.
+   ACTION: decide add-code (MINOR) vs keep-INTERNAL; record either way.
 
-## Open spec questions (NOT resolved; do not guess in code)
+3. **/key/create intermediate-key semantics (linux Q3).** Linux ships
+   RegCreateKeyEx semantics (create all intermediate keys; KEY_EXISTS only
+   when the final component exists). offreg ORCreateKey may create a single
+   key requiring parents. Live differ is green so far, but the contract is
+   silent. ACTION: state the intended semantics in CONTRACTS.md.
+
+4. **GET-with-JSON-body transport (linux Q5).** Reads are GET with a JSON
+   body; the agent routes on path and accepts a body on any method, and the
+   harness sends GET bodies via a low-level builder. ACTION: confirm this
+   transport is intended, or move read params to the query string. Likely
+   just a confirmation + a sentence in the HTTP ADR.
+
+5. **Recovery-tag control surface (harness Q2).** CONTRACTS.md mentions "a
+   separate test mode that simulates crashes" but defines no control
+   surface for aborting mid-save deterministically. The recovery tag is
+   blocked until this is specified. ACTION: spec the crash-injection hook
+   (ties into ADR 0004, dual logs).
+
+Resolved/non-action (recorded so they are not re-litigated):
+- linux Q1 (non-empty delete) and Q6 (/key/security method dispatch):
+  RESOLVED in 0.1.2, confirmed live against offreg.
+- linux Q7 / harness "was 1" (timestamp comparison): RESOLVED in 0.1.2
+  (timestamps excluded from semantic equality).
+- harness Q1 (bytewise applicability): no contract change; the in-memory
+  Linux backend cannot emit regf bytes, so bytewise/most-of-structural are
+  reported n/a, not counted as passes. Revisit when a real backend lands.
+- harness Q3 (SACL-present security sub-tag): deferred to the harness agent
+  per ADR 0003; revisit with the corpus loader.
+
+## Open spec questions (mine; still NOT resolved; do not guess in code)
 
 1. Invariant 11 promotion threshold "1015". Public sources checked
    2026-05-30 (Project Zero regf writeup, Eric Zimmerman's parser) put the
@@ -97,23 +146,41 @@ Clarifications / typos to fix in CONTRACTS.md (all PATCH, no wire change):
 ## Pending ADRs
 
 - 0003 SDDL on the wire / normalized binary diff: WRITTEN and accepted
-  (docs PR with this STATE update).
+  (PR #5).
 - 0004 dual transaction logs design rationale (why two logs, recovery
-  ordering). Still pending; write alongside resolving the minor-version
-  open question.
+  ordering) + the crash-injection control surface for the recovery tag
+  (inbound question 5). Still pending; write alongside resolving the
+  minor-version open question.
 
-## Environment note
+## Environment notes (for the next session)
 
-This worktree (/home/prozac/projects/libreg-spec) tracks branch
-spec/docs-bootstrap; `main` lives in a sibling worktree
-(/home/prozac/projects/libreg) so `git checkout main` fails here by design.
-The contracts branch was created from the base commit directly.
+- This worktree (/home/prozac/projects/libreg-spec) is the spec agent.
+  `main` is checked out in a sibling worktree (/home/prozac/projects/libreg),
+  so `git checkout main` FAILS here. To branch for a PR: `git fetch`, then
+  `git branch -f <name> origin/main && git checkout <name>` (or fast-forward
+  the current branch onto origin/main and stash any working-tree edit).
+- gh is installed (2.45.0) and authenticated as bprochazka-bit. Merging via
+  `gh pr merge --delete-branch` cannot delete the branch locally (worktree
+  layout) and may leave the remote branch; delete it with
+  `gh api -X DELETE repos/bprochazka-bit/regslop/git/refs/heads/<branch>`.
+- Remote is `git@github.com:bprochazka-bit/regslop.git`. Labels `contracts`
+  and `spec` exist. Other agents work in sibling worktrees: libreg-windows,
+  libreg-library, libreg-harness, libreg-fuzz.
 
 ## What I would do next
 
-- Open the two PRs (docs bootstrap; contracts 0.1.1 PATCH). gh is not
-  installed on this box; PRs were pushed and must be created from the
-  GitHub compare URLs (see session summary).
-- Once a corpus hive is available, resolve open questions 1 and 2 and fold
-  the answers into hive-format.md and a follow-up contracts PATCH.
-- Draft ADR 0003 when the first security operation lands.
+- Ratify the default SDDL (issue #11) in a 0.1.3 CONTRACTS PR, labeled
+  `contracts`, on its own (rule 1: no contract change bundled with anything
+  else). Decide between offreg's captured default and a deliberately chosen
+  one, then have the Linux and library agents conform. Highest priority.
+- In the same or a sibling contracts pass, decide BAD_REQUEST (inbound 2),
+  pin /key/create intermediate-key semantics (inbound 3), and confirm the
+  GET-body transport in the HTTP ADR (inbound 4).
+- Draft ADR 0004 (dual transaction logs) covering the recovery-tag
+  crash-injection control surface (inbound 5) alongside open question 2.
+- Resolve my open questions 1 (invariant 11 split point) and 2 (dual-log
+  minor version) once a corpus hive or the live VM can dump the relevant
+  structures; fold answers into hive-format.md and a follow-up PATCH.
+- Decide open question 3 (class_name) once offreg is seen reporting a
+  nonnull class on a corpus hive.
+- Close issue #6 (all downstream PRs merged).
