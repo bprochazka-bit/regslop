@@ -2,27 +2,42 @@
 
 Last updated: 2026-05-31 (library agent)
 
-Branch chain and merge state (READ THIS, the stacking bit caused a trap):
-- Layer 1 allocator (`src/alloc/`): PR #27, MERGED to main.
-- Layer 2 key create (`src/logical/`): PR #31 was opened against its stacked
-  base `agent/library-allocator` and merged THERE, not into main. PR #33
-  (`agent/library-key-create` -> main) re-lands it on main. Watch #33.
-- Step 5 values (`format/vk.rs` + `logical/value.rs`): THIS session, branch
-  `agent/library-values` off `agent/library-key-create`, PR targets main.
-  Lesson learned: target PRs at main, not a sibling agent branch, or the
-  work strands on that branch instead of landing.
+Merge state: steps 1-5 are on main (allocator #27, key create #33, value set
+#37, all MERGED). THIS session (branch `agent/library-offreg-align` off main)
+aligns the create path with the offreg REFERENCE HIVES that landed in
+`tests/corpus/synthetic/` (offreg-generated; see their PROVENANCE.md). PR
+targets main.
 
-This session added step 5 (single value set, get, enumerate) over the
-Layer 2 key tree. Prior sessions: Layer 1 allocator, Layer 2 key create
-(step 4), and the Layer 0 offset cross-check against docs/hive-format.md.
+BIG NEWS: those reference hives are offreg ground truth and let us verify
+output OFFLINE (Hard Rule 4, "match offreg, not docs", finally actionable).
+Inspecting them (via the new `examples/dump_hive.rs`) showed the create path
+diverged from offreg in several ways, now FIXED this session:
 
-KEY UNBLOCK from PR #25 (docs/hive-format.md "What the differ compares"):
-for the `semantic` tag, a created subkey needs only the correct LOGICAL
-form (right name, security, values, name-sorted siblings). The subkey-list
-TYPE (lf vs lh) and the entry hash bytes are bytewise-only and invisible to
-the semantic differ. Layer 2 targets exactly that: it writes an `lh` leaf
-(bytewise-correct) but correctness rests on the logical form. Spec
-questions 3 and 4 are ANSWERED (annotated inline).
+1. Root security descriptor: offreg gives the hive root the SAME descriptor
+   as every created key (the ratified default, issue #11), byte-identical to
+   `default_key_security_descriptor()`. empty_hive used a NULL-DACL
+   placeholder. FIXED: empty_hive root now uses the ratified default. This
+   answers spec question 2 and was a SEMANTIC bug (root SDDL mismatched).
+2. sk sharing: offreg shares one sk across all keys with an identical
+   descriptor, refcount = number of keys (ref_multi.hiv: 6 children, refcount
+   7). We allocated a per-key sk. FIXED: `security::ensure_sk` dedups by
+   descriptor (step 10 pulled forward because offreg requires it).
+3. KEY_COMP_NAME threshold: offreg compresses names with all chars <= U+00FF
+   (Latin-1), not just ASCII (ref_latin1.hiv "Cafe-with-acute" is comp-name
+   byte 0xE9). We used is_ascii(). FIXED in key.rs and value.rs.
+4. Descriptor body order: offreg lays out SACL, DACL, owner, group (DACL
+   right after the 20-byte header). We did owner, group, DACL. FIXED:
+   `SecurityDescriptor::to_bytes` now matches, so the descriptor is now
+   BYTE-identical to offreg's.
+5. Root nk flags: offreg's saved standalone root has KEY_COMP_NAME only
+   (0x20), not KEY_HIVE_ENTRY|KEY_NO_DELETE (the kernel sets KEY_HIVE_ENTRY
+   on mount, not at save). FIXED: `nk::new_root` flags = KEY_COMP_NAME.
+6. lh leaf cap is 507 (one hbin of cell space), not ~1013. FIXED:
+   LH_MAX_ENTRIES = 507 (matches issue #34 / CONTRACTS 0.1.7).
+
+The lh ASCII name hash already matched offreg exactly (verified
+name_hash("Test") == offreg's 0x004269d4). Non-ASCII upcase (full Unicode
+RtlUpcaseUnicodeChar) is still bytewise-only and unimplemented (issue #22).
 
 ## Current layer
 
@@ -243,7 +258,8 @@ a Layer 2 (logical) concern. These are pure parsers/serializers, fully
 verifiable offline; they do NOT yet decide which list type a create emits
 (that is the step 4 logical decision, harness-gated).
 
-Tests (all 87 lib + 2 corpus green, `cargo test`, clippy clean; new files
+Tests (all 88 lib + 2 base/hbin corpus + 4 offreg-compare + 1 vk/value
+corpus green, `cargo test`, clippy clean; new files
 fmt clean. NOTE: pre-existing fmt drift exists in several `format/*.rs` and
 `tests/hbin_walk_corpus.rs` from earlier merges; left untouched per the
 "fmt what you touch" convention, so a repo-wide `cargo fmt --check` still
@@ -321,29 +337,50 @@ every `format/*.rs`; pass only the files you changed, or revert the rest.):
   `setting_same_name_replaces`, `value_lookup_is_case_insensitive`,
   `multiple_values_on_one_key`, `missing_value_is_none`,
   `values_are_byte_deterministic`.
+- `src/logical/mod.rs` (security, this session):
+  `child_shares_the_root_security_cell` (child points at the root sk,
+  refcount 2, lone ring) and `many_keys_share_one_sk_with_summed_refcount`
+  (6 children, refcount 7, like ref_multi.hiv).
+- `tests/create_matches_offreg.rs` (this session): builds the same keys as
+  each offreg reference hive and asserts matching subkey sets and per-key
+  security descriptors: `one_ascii_subkey_matches_offreg`,
+  `six_ascii_subkeys_match_offreg`, `latin1_name_matches_offreg`,
+  `wide_name_matches_offreg`. SKIP if a fixture is absent.
+- Examples (this session): `examples/dump_hive.rs` (structure dump of any
+  hive, used to read the references) and `examples/make_key_hive.rs` (write a
+  hive with given subkeys to a path, for manual offreg/harness testing).
 
-## CAVEAT: step 3 is implemented but NOT verified (read before trusting)
+## Step 3/4/5 verification against offreg references (this session)
 
-The step 3 acceptance test is "the Windows agent loads the hive via
-offreg without error". libreg cannot run offreg, and the Windows agent /
-harness are not present in this worktree, so this has NOT been verified.
-What IS verified is self-consistency: the produced hive passes every
-structural check libreg itself can make, and the bytes match the
-documented regf format on manual hexdump.
+The earlier "best-effort guesses" for the empty hive are now CONFIRMED or
+CORRECTED against the offreg reference hives in tests/corpus/synthetic:
 
-These offreg-specific choices are best-effort guesses (Hard Rule 4 says
-match offreg, not docs, but I had no offreg to match against):
+- Root security descriptor: CORRECTED to the ratified default (was a NULL-DACL
+  placeholder); now byte-identical to offreg's root sk.
+- Root key name "ROOT": CONFIRMED.
+- Format minor version 1.5: CONFIRMED (offreg default).
+- Root nk flags: CORRECTED to KEY_COMP_NAME only (offreg saves with no
+  KEY_HIVE_ENTRY/KEY_NO_DELETE).
 
-1. Default security descriptor (NULL DACL, owner/group = Local System).
-   offreg may reject a NULL DACL on load, or write a different default.
-2. Root key name "ROOT". offreg may use a different name/marker.
-3. Format minor version 5 (v1.5). offreg may emit 1.3 for an empty hive.
-4. Base block file name field zeroed; access bits 0; root parent =
-   0xFFFFFFFF.
+The empty-hive layout (root nk @0x20, sk @0x78, sk descriptor bytes, free
+@0x120) now matches ref_one_ascii.hiv. The `create_matches_offreg.rs`
+integration test confirms libreg's create output matches the references'
+logical form (subkey sets, per-key security descriptors) for the one-key,
+six-key, Latin-1, and wide-name fixtures.
 
-ALL are overridable via `EmptyHiveOptions` (except parent/version, which
-are easy to expose if needed). Do NOT mark step 3 closed until the
-harness reports the Windows agent loading a libreg empty hive cleanly.
+STILL not byte-identical to offreg (documented bytewise deltas, all
+semantically irrelevant):
+- last_written timestamp (offreg uses real time; we use a fixed stamp).
+- Allocation ORDER: offreg allocates the lh leaf before the child nk
+  (lh @0x120, child @0x130); we allocate the child first (child @0x120,
+  lh @0x178). Pure allocator ordering; semantics identical.
+- offreg fingerprint (the `OfRg` tag at file offset 0xB0 and a serialization
+  timestamp near 0x200); informative only, not reproduced.
+- Non-ASCII lh name hash (full Unicode upcase); issue #22, bytewise only.
+
+Step 3/4/5 are still not formally CLOSED until the HARNESS loads a libreg
+hive via offreg and reports `semantic` green, but the offline evidence is
+now strong (byte-identical empty-hive prefix and descriptor, matching tree).
 
 ## What is half-done / not started
 
@@ -355,12 +392,13 @@ harness reports the Windows agent loading a libreg empty hive cleanly.
   return Unsupported (step 9). All REG_* types work since data is opaque
   bytes + a type code; the agent maps JSON to bytes.
 - lh -> ri promotion (step 8) not done: `insert_subkey` errors past
-  LH_MAX_ENTRIES (1013) instead of promoting. Fine until a key has that
-  many subkeys.
-- sk dedup/sharing (step 10) not done: every created key adds its own sk,
-  so identical descriptors are not yet collapsed to one shared cell with a
-  summed refcount. Refcounts are still exact (each sk has its one referrer),
-  so invariant 14 holds; the hive just has more sk cells than offreg would.
+  LH_MAX_ENTRIES (507, the offreg cap) instead of promoting. Fine until a
+  key has more than 507 subkeys. ref_ri.hiv (1100 keys) needs this for read
+  (step 6) and write (step 8).
+- sk dedup/sharing (the create-side of step 10) DONE this session:
+  `security::ensure_sk` reuses a descriptor-equal sk and bumps its refcount,
+  matching offreg (ref_multi.hiv: refcount 7 for 6 children). NOT done: the
+  refcount DECREMENT and orphan-free on key delete (pairs with step 7).
 - No key deletion yet (step 7); the allocator's `free`/coalesce is ready
   for it, but no logical delete path frees an nk/list/sk subtree.
 - Steps 6-11 otherwise not started. li/ri/db format modules not written
@@ -401,16 +439,16 @@ harness reports the Windows agent loading a libreg empty hive cleanly.
    little-endian dwords over bytes 0x000..0x1FB with the 0 -> 1 /
    0xFFFFFFFF -> 0xFFFFFFFE quirks. libreg's implementation already matches;
    no change needed.
-2. PARTLY RESOLVED. The default security descriptor for a freshly created
-   KEY was ratified in 0.1.6 (issue #11) and is implemented this session in
-   `security_descriptor.rs`. STILL OPEN for the empty-HIVE ROOT
-   specifically: whether offreg gives the root the same descriptor, plus the
-   root key NAME and the format MINOR VERSION (1.3 vs 1.5/1.6). The spec
-   agent's open question 2 (dual-log minor version, 5 vs 6) overlaps the
-   version part and is itself pending a corpus hive. Needs an offreg-created
-   reference hive (or harness confirmation) to replace the `empty_hive.rs` /
-   `sk.rs` root placeholders. Do NOT assume the root reuses the created-key
-   default.
+2. ANSWERED by the offreg reference hives (this session). The empty-hive ROOT
+   carries the SAME descriptor as a created key (the ratified default, issue
+   #11): byte-identical to the root sk in ref_one_ascii.hiv. Root name is
+   "ROOT", minor version 1.5, root nk flags KEY_COMP_NAME only. All applied to
+   `empty_hive.rs` / `nk::new_root`. The old `sk::default_security_descriptor`
+   (NULL-DACL placeholder) is now UNUSED by empty_hive (kept, still has a unit
+   test; could be removed). FILE A SPEC NOTE: root nk flags being
+   KEY_COMP_NAME only (no KEY_HIVE_ENTRY) contradicts Suhanov's doc; confirmed
+   against offreg, so offreg wins (Hard Rule 4), but the spec agent should
+   note it in docs/hive-format.md.
 3. ANSWERED (issue #22, PR #25). The lh name hash for non-ASCII names is a
    BYTEWISE-only detail: the subkey-list type and hash bytes are invisible
    to the semantic differ. ASCII names already hash correctly, which is all
@@ -428,27 +466,26 @@ harness reports the Windows agent loading a libreg empty hive cleanly.
 
 ## What I would do next session
 
-1. GET THE HARNESS to drive `Hive` and confirm step 4 `semantic` green
-   (and step 3 while at it). The artifact path is: build a `Hive`, create
-   keys, call `to_file()`, hand the bytes to the Windows agent via offreg.
-   Coordinate with the harness/linux-agent developers on wiring `Hive` into
-   `agents/linux` (their subtree, not ours): they need `create_key` and a
-   dump/enumerate path. Only after `semantic` is green is step 4 CLOSED.
-   This also surfaces whether the child's ratified SD and the root's
-   placeholder SD survive offreg (spec question 2).
-2. Step 5 (value set) DONE this session (`format/vk.rs` + `logical/value.rs`,
-   set/get/enumerate, inline and data-cell storage). Next value work: value
-   DELETE (with step 7 key delete), and db big-data cells (step 9) for
-   values over 16344 bytes.
-2b. Step 6: subkey enumeration from a CORPUS hive (lf and lh). Our create
-   path already builds and reads lh; step 6 wants to read a real offreg
-   hive's subkey lists (which may be lf or li). Needs a corpus hive present.
-3. Reconcile the root SD (spec question 2) once a corpus/offreg reference
-   exists: if offreg gives the root the ratified created-key default, switch
-   `empty_hive.rs` to it; then a child under root could SHARE the root sk
-   (step 10 dedup) rather than add its own. Today they differ on purpose.
-4. Obtain a corpus hive so the step 1/2 corpus tests run for real (not
-   SKIP) and to answer spec question 2 directly.
+1. GET THE HARNESS to drive `Hive` and confirm `semantic` green for steps
+   3/4/5. Build a `Hive`, create keys/values, `to_file()`, hand the bytes to
+   the Windows agent via offreg. Coordinate with the harness/linux-agent devs
+   on wiring `Hive` into `agents/linux` (their subtree). The offline evidence
+   is now strong (byte-identical empty-hive prefix + descriptor, matching
+   tree vs the offreg references), so this should pass.
+2. Step 6: subkey enumeration from the CORPUS hives that now exist
+   (tests/corpus/synthetic). Our logical layer only reads `lh`; ref_ri.hiv
+   uses an `ri` index of `lh` leaves. Add `format/ri.rs` (and `li.rs`) Layer 0
+   parsers and make `index::list_entries` dispatch on the cell signature
+   (lf/lh/li/ri) so it can enumerate any real hive. `examples/dump_hive.rs`
+   already has a partial ri walker to crib from. This is the natural next step
+   and is fully offline-testable against ref_ri.hiv.
+3. Step 7 (key/value delete + free list): the allocator's free/coalesce is
+   ready; add a logical delete that frees the nk, its subkey/value lists, and
+   decrements/frees the sk (refcount down, free at 0). Value delete too.
+4. Bytewise parity polish (lower priority, all bytewise-only): match offreg's
+   allocation order (lh before child nk), the non-ASCII lh hash (full Unicode
+   upcase, issue #22). The `dump_hive`/`make_key_hive` examples make this easy
+   to check against the references.
 5. A small fmt-only PR to clear the pre-existing `cargo fmt` drift in
    `format/*.rs` and `tests/hbin_walk_corpus.rs` (left untouched here per
    "fmt what you touch"), so repo-wide `cargo fmt --check` is clean.

@@ -1,11 +1,13 @@
 //! Security-cell (sk) ring management for the logical layer.
 //!
-//! sk cells form a doubly linked circular list (invariant 13). A freshly
-//! created key gets its own sk carrying the ratified default descriptor;
-//! deduplicating identical descriptors into one shared sk with a summed
-//! refcount is step 10 and not done here, so every created key adds one sk
-//! with refcount 1. Refcounts stay exact (invariant 14): each sk is pointed
-//! at by exactly the one key that created it.
+//! sk cells form a doubly linked circular list (invariant 13) and are shared
+//! by every key with an identical descriptor, with the reference count equal
+//! to the number of referring keys (invariant 14). offreg deduplicates this
+//! way: the offreg reference hives (tests/corpus/synthetic) show a root and
+//! all its created children pointing at a single sk whose refcount rises with
+//! each key (ref_multi.hiv: 6 children, refcount 7). [`ensure_sk`] matches
+//! that: it reuses an existing descriptor-equal sk and only allocates a new
+//! cell for a genuinely new descriptor.
 
 use crate::alloc::HiveImage;
 use crate::format::sk::{SecurityCell, SK_HEADER_SIZE};
@@ -20,14 +22,35 @@ fn write_sk(image: &mut HiveImage, off: u32, sk: &SecurityCell) {
     image.content_mut(off)[..payload.len()].copy_from_slice(&payload);
 }
 
-/// Allocate a new sk cell carrying `descriptor` and splice it into the ring
-/// immediately after `anchor_off`, returning the new cell's offset. The new
-/// cell starts with refcount 1.
-pub fn add_sk(
+/// Return the offset of an sk cell carrying `descriptor`, reusing an existing
+/// descriptor-equal cell in the ring (bumping its refcount) or allocating and
+/// linking a new one otherwise. `ring_member` is any cell already in the ring
+/// (the root's sk is the natural choice).
+pub fn ensure_sk(
     image: &mut HiveImage,
-    anchor_off: u32,
+    ring_member: u32,
     descriptor: Vec<u8>,
 ) -> Result<u32, FormatError> {
+    let mut cur = ring_member;
+    loop {
+        let sk = read_sk(image, cur)?;
+        if sk.descriptor == descriptor {
+            let mut bumped = sk;
+            bumped.refcount += 1;
+            write_sk(image, cur, &bumped);
+            return Ok(cur);
+        }
+        cur = sk.flink;
+        if cur == ring_member {
+            break;
+        }
+    }
+    add_sk(image, ring_member, descriptor)
+}
+
+/// Allocate a new sk cell carrying `descriptor` and splice it into the ring
+/// immediately after `anchor_off`, returning its offset. Refcount starts at 1.
+fn add_sk(image: &mut HiveImage, anchor_off: u32, descriptor: Vec<u8>) -> Result<u32, FormatError> {
     let new_off = image.alloc(SK_HEADER_SIZE + descriptor.len());
 
     let anchor = read_sk(image, anchor_off)?;

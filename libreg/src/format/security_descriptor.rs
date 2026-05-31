@@ -313,9 +313,12 @@ pub struct SecurityDescriptor {
 impl SecurityDescriptor {
     /// Serialize to a self-relative descriptor.
     ///
-    /// Body order is owner, group, DACL, SACL. Any reader uses the header
-    /// offsets, so the order is an internal choice; it does not affect the
-    /// SDDL the agents derive (ADR 0003).
+    /// Body order is SACL, DACL, owner, group, which is what offreg (and
+    /// `RtlAbsoluteToSelfRelativeSD`) emit: confirmed against the root sk in
+    /// the offreg reference hives (tests/corpus/synthetic), where the DACL
+    /// sits right after the 20-byte header and owner/group follow it. A
+    /// reader uses the header offsets, so the order does not change the SDDL
+    /// the agents derive (ADR 0003); matching it gives byte parity too.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut control = self.control | SE_SELF_RELATIVE;
         if self.dacl.is_some() {
@@ -325,8 +328,19 @@ impl SecurityDescriptor {
             control |= SE_SACL_PRESENT;
         }
 
-        // Bodies are laid out after the fixed header; compute offsets first.
+        // Bodies follow the fixed header in the order SACL, DACL, owner,
+        // group; compute each offset as it is placed.
         let mut cursor = SD_HEADER_SIZE;
+        let sacl_off = self.sacl.as_ref().map(|a| {
+            let o = cursor;
+            cursor += a.byte_len();
+            o as u32
+        });
+        let dacl_off = self.dacl.as_ref().map(|a| {
+            let o = cursor;
+            cursor += a.byte_len();
+            o as u32
+        });
         let owner_off = self.owner.as_ref().map(|s| {
             let o = cursor;
             cursor += s.byte_len();
@@ -335,16 +349,6 @@ impl SecurityDescriptor {
         let group_off = self.group.as_ref().map(|s| {
             let o = cursor;
             cursor += s.byte_len();
-            o as u32
-        });
-        let dacl_off = self.dacl.as_ref().map(|a| {
-            let o = cursor;
-            cursor += a.byte_len();
-            o as u32
-        });
-        let sacl_off = self.sacl.as_ref().map(|a| {
-            let o = cursor;
-            cursor += a.byte_len();
             o as u32
         });
 
@@ -356,17 +360,17 @@ impl SecurityDescriptor {
         out.extend_from_slice(&group_off.unwrap_or(0).to_le_bytes());
         out.extend_from_slice(&sacl_off.unwrap_or(0).to_le_bytes());
         out.extend_from_slice(&dacl_off.unwrap_or(0).to_le_bytes());
+        if let Some(a) = &self.sacl {
+            a.write_to(&mut out);
+        }
+        if let Some(a) = &self.dacl {
+            a.write_to(&mut out);
+        }
         if let Some(s) = &self.owner {
             s.write_to(&mut out);
         }
         if let Some(s) = &self.group {
             s.write_to(&mut out);
-        }
-        if let Some(a) = &self.dacl {
-            a.write_to(&mut out);
-        }
-        if let Some(a) = &self.sacl {
-            a.write_to(&mut out);
         }
         debug_assert_eq!(out.len(), cursor);
         out

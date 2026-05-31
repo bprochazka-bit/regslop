@@ -13,12 +13,14 @@ use crate::format::lh::{HashLeaf, HashLeafEntry};
 use crate::format::nk::{KeyNode, OFFSET_NONE};
 use core::cmp::Ordering;
 
-/// Conservative maximum entries in a single lh leaf before a two-level ri
-/// index root is required. The real offreg split point is near here
-/// (docs/hive-format.md puts lh/lf at about 1013); ri promotion is step 8.
-/// Until then we refuse to grow past this rather than emit a leaf offreg
-/// would reject, and surface it as an error instead of silently truncating.
-const LH_MAX_ENTRIES: usize = 1013;
+/// Maximum entries in a single lh leaf before a two-level ri index root is
+/// required. offreg caps a leaf at 507 entries, which is one hbin of cell
+/// space: (4096 - 32 header - 8 cell size field) / 8 bytes per entry = 507
+/// (tests/corpus/synthetic/ref_ri.hiv splits its leaves at 507, confirming
+/// the boundary that issue #34 / CONTRACTS 0.1.7 pin). The 508th subkey
+/// promotes the leaf to an ri index of lh leaves, which is step 8; until then
+/// we error rather than emit a leaf offreg would reject.
+const LH_MAX_ENTRIES: usize = 507;
 
 /// Insert the subkey at `child_off` (named `child_name`) into `parent`'s
 /// subkey list, keeping entries name-sorted. Updates `parent`'s

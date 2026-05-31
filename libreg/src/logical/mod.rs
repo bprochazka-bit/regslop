@@ -142,6 +142,15 @@ impl Hive {
         value::list_names(&self.image, off)
     }
 
+    /// The raw self-relative security descriptor bytes of the key at `path`.
+    /// The agent converts these to/from SDDL on the wire (CONTRACTS Security).
+    pub fn key_security(&self, path: &str) -> Result<Vec<u8>, LogicalError> {
+        let off = self.resolve(path)?.ok_or(LogicalError::NotFound)?;
+        let nk = key::read_nk(&self.image, off)?;
+        let sk = crate::format::sk::SecurityCell::parse(self.image.content(nk.security_offset))?;
+        Ok(sk.descriptor)
+    }
+
     /// Offset of the key at `path`, or `None` if any component is missing.
     pub fn resolve(&self, path: &str) -> Result<Option<u32>, LogicalError> {
         let mut current = self.root_offset;
@@ -172,10 +181,12 @@ impl Hive {
     }
 
     fn add_child(&mut self, parent_off: u32, name: &str) -> Result<u32, LogicalError> {
-        // Every created key gets its own sk carrying the ratified default
-        // descriptor, spliced into the root's sk ring (sharing is step 10).
+        // A created key carries the ratified default descriptor, shared with
+        // every other key that has the same descriptor (offreg deduplicates;
+        // see ref_multi.hiv). Since the root carries the same descriptor, the
+        // common case reuses the root's sk and bumps its refcount.
         let anchor = key::read_nk(&self.image, self.root_offset)?.security_offset;
-        let sk_off = security::add_sk(
+        let sk_off = security::ensure_sk(
             &mut self.image,
             anchor,
             default_key_security_descriptor_bytes(),
@@ -287,27 +298,42 @@ mod tests {
     }
 
     #[test]
-    fn child_carries_the_ratified_default_security() {
+    fn child_shares_the_root_security_cell() {
+        // offreg shares one sk for keys with an identical descriptor (the
+        // root and its children all use the ratified default), bumping the
+        // refcount rather than allocating a per-key sk. See ref_multi.hiv.
         let mut hive = Hive::new_empty();
         let off = hive.create_key("Software").unwrap();
         let child = key::read_nk(hive.image(), off).unwrap();
+        let root = key::read_nk(hive.image(), hive.root_offset()).unwrap();
+
+        // The child points at the very same sk cell as the root.
+        assert_eq!(child.security_offset, root.security_offset, "shared sk");
 
         let sk = SecurityCell::parse(hive.image().content(child.security_offset)).unwrap();
         assert_eq!(sk.descriptor, default_key_security_descriptor_bytes());
-        assert_eq!(sk.refcount, 1);
+        assert_eq!(sk.refcount, 2, "root + one child reference the sk");
 
-        // Ring now has the root sk plus the one child sk: a 2-element ring
-        // whose forward and backward links are mutually consistent.
+        // The ring is still a single lone sk (self-linked).
+        let ring = sk_ring(&hive, root.security_offset);
+        assert_eq!(ring.len(), 1, "one shared sk, not one per key");
+        assert_eq!(ring[0].1.flink, root.security_offset);
+        assert_eq!(ring[0].1.blink, root.security_offset);
+    }
+
+    #[test]
+    fn many_keys_share_one_sk_with_summed_refcount() {
+        // Mirrors ref_multi.hiv: 6 children plus the root share one sk with
+        // refcount 7 (the step 10 invariant, pulled forward to match offreg).
+        let mut hive = Hive::new_empty();
+        for name in ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"] {
+            hive.create_key(name).unwrap();
+        }
         let root = key::read_nk(hive.image(), hive.root_offset()).unwrap();
         let ring = sk_ring(&hive, root.security_offset);
-        assert_eq!(ring.len(), 2, "root sk + child sk");
-        for i in 0..ring.len() {
-            let (off, sk) = &ring[i];
-            let (next_off, _) = &ring[(i + 1) % ring.len()];
-            assert_eq!(sk.flink, *next_off, "flink chains");
-            let (_, next_sk) = &ring[(i + 1) % ring.len()];
-            assert_eq!(next_sk.blink, *off, "blink mirrors flink");
-        }
+        assert_eq!(ring.len(), 1, "single shared sk");
+        assert_eq!(ring[0].1.refcount, 7, "root + 6 children");
+        assert_loadable(&hive);
     }
 
     #[test]

@@ -50,12 +50,16 @@ pub fn build_child_nk(name: &str, parent: u32, security_offset: u32, last_writte
     }
 }
 
-/// Encode a key name: ASCII (Latin-1) with KEY_COMP_NAME set when every
-/// character is ASCII, otherwise UTF-16LE with the flag clear. Returns the
-/// flag contribution and the on-disk name bytes.
+/// Encode a key name: Latin-1 with KEY_COMP_NAME set when every character is
+/// at most U+00FF (one byte each), otherwise UTF-16LE with the flag clear.
+/// Returns the flag contribution and the on-disk name bytes.
+///
+/// The U+00FF (not ASCII U+007F) threshold matches offreg: the reference hive
+/// ref_latin1.hiv stores "Café" (e-acute, U+00E9) compressed as Latin-1 byte
+/// 0xE9, while ref_wide.hiv stores a name with U+03A9 as UTF-16LE.
 fn encode_name(name: &str) -> (u16, Vec<u8>) {
-    if name.is_ascii() {
-        (KEY_COMP_NAME, name.as_bytes().to_vec())
+    if name.chars().all(|c| (c as u32) <= 0xFF) {
+        (KEY_COMP_NAME, name.chars().map(|c| c as u8).collect())
     } else {
         let mut bytes = Vec::with_capacity(name.len() * 2);
         for unit in name.encode_utf16() {
