@@ -417,10 +417,15 @@ pub fn copy_subtree(root: Orhkey, src: &str, dst: &str) -> Result<(), AgentError
     // Create the destination with the source's class name.
     let (dst_key, _) = Key::create_level(root, dst, info.class.as_deref())?;
 
-    // Preserve security. Best effort: an offline-hive SACL write quirk must
-    // not abort the whole rename; the harness will surface any security diff.
-    if let Some((sec_info, sd)) = read_security_bytes(&src_key) {
-        let _ = dst_key.set_security(sec_info, &sd);
+    // Preserve owner, group, and DACL. We deliberately set with SEC_NO_SACL,
+    // never the SACL bit: setting with the SACL mask makes offreg stamp an
+    // explicit empty SACL (S:NO_ACCESS_CONTROL) on keys whose source had none,
+    // creating a spurious one-sided SACL vs libreg. Offline-hive SACLs are
+    // unreliable and ADR 0003 does not fail the semantic tag on a one-sided
+    // SACL, so dropping it here is the clean choice. Best effort: a security
+    // write quirk must not abort the whole rename.
+    if let Some((_, sd)) = read_security_bytes(&src_key) {
+        let _ = dst_key.set_security(SEC_NO_SACL, &sd);
     }
 
     for (name, ty, bytes) in src_key.enum_values()? {
