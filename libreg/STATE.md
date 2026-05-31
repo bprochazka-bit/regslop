@@ -2,15 +2,19 @@
 
 Last updated: 2026-05-31 (library agent)
 
-Branch chain (stacked, both off current main, merge in order):
-- `agent/library-allocator` -> PR #27: Layer 1 allocator (`src/alloc/`).
-- `agent/library-key-create` -> Layer 2 key create (`src/logical/`), this
-  session. Stacked on #27; merge #27 first.
+Branch chain and merge state (READ THIS, the stacking bit caused a trap):
+- Layer 1 allocator (`src/alloc/`): PR #27, MERGED to main.
+- Layer 2 key create (`src/logical/`): PR #31 was opened against its stacked
+  base `agent/library-allocator` and merged THERE, not into main. PR #33
+  (`agent/library-key-create` -> main) re-lands it on main. Watch #33.
+- Step 5 values (`format/vk.rs` + `logical/value.rs`): THIS session, branch
+  `agent/library-values` off `agent/library-key-create`, PR targets main.
+  Lesson learned: target PRs at main, not a sibling agent branch, or the
+  work strands on that branch instead of landing.
 
-This session added Layer 2 (the logical key tree) and implemented step 4
-(single key create), with full-path/intermediate creation and name-sorted
-siblings. The prior session added Layer 1 (the allocator) and verified the
-Layer 0 offsets against `docs/hive-format.md` (they match).
+This session added step 5 (single value set, get, enumerate) over the
+Layer 2 key tree. Prior sessions: Layer 1 allocator, Layer 2 key create
+(step 4), and the Layer 0 offset cross-check against docs/hive-format.md.
 
 KEY UNBLOCK from PR #25 (docs/hive-format.md "What the differ compares"):
 for the `semantic` tag, a created subkey needs only the correct LOGICAL
@@ -22,15 +26,44 @@ questions 3 and 4 are ANSWERED (annotated inline).
 
 ## Current layer
 
-Layer 2 (`logical/`) as of this session. Layers 0 and 1 in place. Step 3
-(empty hive creation) is IMPLEMENTED and self-validated, but NOT yet
-verified against offreg (acceptance is harness-gated; see caveat below).
+Layer 2 (`logical/`). Layers 0 and 1 in place. Step 3 (empty hive creation)
+is IMPLEMENTED and self-validated, but NOT yet verified against offreg
+(acceptance is harness-gated; see caveat below).
 
-Step 4 (single key create) is IMPLEMENTED and offline-validated (structural
-tests below), but its acceptance test is "differ green on `semantic`",
-which needs the harness/Windows agent (not in this worktree). So step 4 is
-not yet CLOSED. The `Hive` API plus `to_file()` is the concrete artifact
-the harness agent can now drive (CLAUDE.md asks for one after step 4).
+Steps 4 (key create) and 5 (value set) are IMPLEMENTED and offline-validated
+(structural tests below), but their acceptance is "differ green on
+`semantic`", which needs the harness/Windows agent (not in this worktree),
+so neither is CLOSED yet. The `Hive` API (`create_key`, `set_value`,
+`get_value`, `subkeys`, `values`, `to_file`) is the artifact the harness
+agent can now drive.
+
+## Layer 2: values (step 5, this session)
+
+`src/format/vk.rs` (Layer 0) parses/serializes value cells: signature, name
+length, data size (with the 0x80000000 inline bit), data offset (an offset
+or the inline bytes), data type, and flags (VALUE_COMP_NAME). Raw `data_size`
+/ `data_offset` words are kept for exact round trip; `new_inline` /
+`new_pointer` / `is_inline` / `data_len` / `inline_data` interpret them.
+
+`src/logical/value.rs` implements set/get/enumerate over a key's value list
+(a raw u32 array of vk offsets sized by the nk `value_count`):
+- `set(key_off, name, type, data)`: creates or replaces a value. Data <= 4
+  bytes is stored inline in the vk; larger data goes in a plain data cell
+  (db big-data for > 16344 bytes is step 9, returns Unsupported for now).
+  Replace frees the old out-of-line data cell and rewrites the vk in place
+  (same name => same vk size). New values append to the value list (a fresh
+  list cell is allocated and the old one freed) and bump nk `value_count` /
+  `values_list_offset`.
+- `get` returns `(type, data)`, decoding inline-or-cell. `list_names`
+  enumerates value names in stored (insertion) order.
+- Data is opaque: callers pass a REG_* type code and raw bytes; the agent
+  owns the JSON-to-bytes mapping (CONTRACTS value table). Value names use
+  VALUE_COMP_NAME for ASCII (else UTF-16LE), case-insensitive lookup.
+  `Hive::set_value` / `get_value` / `values` resolve the path and call in.
+
+Value-list ordering is insertion order (deterministic, Hard Rule 5); it is
+not required sorted (the canonical form sorts by name for comparison), so
+this is a free, offreg-plausible choice. Confirm against offreg for bytewise.
 
 ## Layer 2: the logical key tree (this session)
 
@@ -210,11 +243,13 @@ a Layer 2 (logical) concern. These are pure parsers/serializers, fully
 verifiable offline; they do NOT yet decide which list type a create emits
 (that is the step 4 logical decision, harness-gated).
 
-Tests (all 72 lib + 2 corpus green, `cargo test`, clippy clean; new files
+Tests (all 87 lib + 2 corpus green, `cargo test`, clippy clean; new files
 fmt clean. NOTE: pre-existing fmt drift exists in several `format/*.rs` and
 `tests/hbin_walk_corpus.rs` from earlier merges; left untouched per the
 "fmt what you touch" convention, so a repo-wide `cargo fmt --check` still
-reports diffs there. Worth a separate fmt-only cleanup PR.):
+reports diffs there. Worth a separate fmt-only cleanup PR. WATCH OUT:
+`rustfmt src/format/mod.rs` follows the `mod` declarations and reformats
+every `format/*.rs`; pass only the files you changed, or revert the rest.):
 
 - `src/format/base_block.rs` unit tests: `parses_known_fields`,
   `round_trip_is_byte_exact`, `rejects_short_buffer`,
@@ -278,6 +313,14 @@ reports diffs there. Worth a separate fmt-only cleanup PR.):
   (Hard Rule 5), and `tree_invariant_holds_over_random_creates` (120 random
   creates against a model: every node enumerates exactly its children,
   name-sorted; walk green after each op; loadable file).
+- `src/format/vk.rs`: `inline_round_trips`, `short_inline_is_zero_padded`,
+  `pointer_round_trips`, `round_trips_through_a_cell`, `rejects_bad_signature`,
+  `rejects_short_header`, `rejects_name_past_end`.
+- `src/logical/mod.rs` (values): `set_and_get_inline_value`,
+  `set_and_get_out_of_line_value`, `default_value_uses_empty_name`,
+  `setting_same_name_replaces`, `value_lookup_is_case_insensitive`,
+  `multiple_values_on_one_key`, `missing_value_is_none`,
+  `values_are_byte_deterministic`.
 
 ## CAVEAT: step 3 is implemented but NOT verified (read before trusting)
 
@@ -304,11 +347,13 @@ harness reports the Windows agent loading a libreg empty hive cleanly.
 
 ## What is half-done / not started
 
-- Step 4 (single key create) IMPLEMENTED in Layer 2 and offline-validated;
-  not CLOSED until the harness reports `semantic` green (needs the
-  Windows agent / harness, not in this worktree).
-- Step 5 (values) not started: no vk format module, no value ops in
-  logical. This is the next step.
+- Steps 4 (key create) and 5 (value set) IMPLEMENTED in Layer 2 and
+  offline-validated; not CLOSED until the harness reports `semantic` green
+  (needs the Windows agent / harness, not in this worktree).
+- Step 5 partial coverage: set/get/enumerate done; value DELETE not done
+  (pairs with key delete, step 7). Big-data (db) values over 16344 bytes
+  return Unsupported (step 9). All REG_* types work since data is opaque
+  bytes + a type code; the agent maps JSON to bytes.
 - lh -> ri promotion (step 8) not done: `insert_subkey` errors past
   LH_MAX_ENTRIES (1013) instead of promoting. Fine until a key has that
   many subkeys.
@@ -318,7 +363,9 @@ harness reports the Windows agent loading a libreg empty hive cleanly.
   so invariant 14 holds; the hive just has more sk cells than offreg would.
 - No key deletion yet (step 7); the allocator's `free`/coalesce is ready
   for it, but no logical delete path frees an nk/list/sk subtree.
-- Steps 6-11 otherwise not started. li/ri/db/vk format modules not written.
+- Steps 6-11 otherwise not started. li/ri/db format modules not written
+  (vk now exists). Step 6 is subkey enumeration via lf/lh on a CORPUS hive
+  (our create-side lh enumeration already works; step 6 wants a real hive).
 - Allocator is a content-agnostic substrate only: it does not update nk
   link fields, refcounts, or counts. That bookkeeping is Layer 2's job.
 - Allocator does not yet free into a size-bucketed list; first-fit scans
@@ -389,11 +436,13 @@ harness reports the Windows agent loading a libreg empty hive cleanly.
    dump/enumerate path. Only after `semantic` is green is step 4 CLOSED.
    This also surfaces whether the child's ratified SD and the root's
    placeholder SD survive offreg (spec question 2).
-2. Step 5: value set (all REG_* types). Needs a new `format/vk.rs` (value
-   cell) plus a value-list cell (raw u32 offset array) and data cells
-   (inline for <= 4 bytes, plain data cell otherwise, db deferred to step
-   9). Then `logical/value.rs`: set/get/delete wiring the parent nk's
-   `value_count` / `values_list_offset`. Follow the lf/lh + index.rs shape.
+2. Step 5 (value set) DONE this session (`format/vk.rs` + `logical/value.rs`,
+   set/get/enumerate, inline and data-cell storage). Next value work: value
+   DELETE (with step 7 key delete), and db big-data cells (step 9) for
+   values over 16344 bytes.
+2b. Step 6: subkey enumeration from a CORPUS hive (lf and lh). Our create
+   path already builds and reads lh; step 6 wants to read a real offreg
+   hive's subkey lists (which may be lf or li). Needs a corpus hive present.
 3. Reconcile the root SD (spec question 2) once a corpus/offreg reference
    exists: if offreg gives the root the ratified created-key default, switch
    `empty_hive.rs` to it; then a child under root could SHARE the root sk
