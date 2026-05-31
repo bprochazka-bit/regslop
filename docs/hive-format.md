@@ -187,6 +187,16 @@ names it "VALUE_COMP_NAME"; that is a typo, tracked in docs/STATE.md and
 the contracts patch PR. When set, the key name is Latin-1; when clear,
 UTF-16LE (CONTRACTS invariant 16, otherwise correct).
 
+Root key flags: Suhanov shows the root nk carrying KEY_HIVE_ENTRY (0x0004)
+and KEY_NO_DELETE (0x0008). offreg does NOT set these when it creates and
+saves an offline hive: every root nk in tests/corpus/synthetic/*.hiv has
+flags 0x0020 (KEY_COMP_NAME only), with KEY_HIVE_ENTRY and KEY_NO_DELETE
+clear. Those two bits are set by the live kernel when a hive is mounted, not
+stamped into the on-disk image by offreg. Per Hard Rule 4 (match offreg, not
+the docs) libreg's created root carries 0x0020 only; a producer that sets
+the two extra bits would diverge on bytewise. The flag table above still
+documents the bits; this note records what offreg's on-disk root uses.
+
 ### 3.2 vk (value)
 
 One vk per named value. Signature `vk` (0x6b76).
