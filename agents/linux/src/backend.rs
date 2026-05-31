@@ -106,7 +106,9 @@ impl MemBackend {
 }
 
 /// Validate that `data` matches the shape implied by the declared type, per the
-/// type table in CONTRACTS.md. Returns TYPE_MISMATCH on mismatch.
+/// type table in CONTRACTS.md. Returns TYPE_MISMATCH when a known type's data
+/// has the wrong shape, and BAD_REQUEST when the type name itself is unknown
+/// (an unknown constant, CONTRACTS 0.1.4).
 fn validate_value(vtype: &str, data: &serde_json::Value) -> Result<()> {
     use serde_json::Value as J;
     let is_u32 = |n: &serde_json::Number| n.as_u64().map(|v| v <= u32::MAX as u64).unwrap_or(false);
@@ -143,7 +145,9 @@ fn validate_value(vtype: &str, data: &serde_json::Value) -> Result<()> {
                 _ => Err(AgentError::type_mismatch(format!("{vtype} data must be a base64 string"))),
             }
         }
-        other => Err(AgentError::type_mismatch(format!("unknown value type: {other}"))),
+        // An unrecognized type name is an unknown constant, i.e. a malformed
+        // request (BAD_REQUEST), not a data-shape mismatch (CONTRACTS 0.1.4).
+        other => Err(AgentError::bad_request(format!("unknown value type: {other}"))),
     }
 }
 
@@ -414,5 +418,48 @@ impl Backend for MemBackend {
                 ],
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unknown_value_type_is_bad_request() {
+        // An unrecognized type name is an unknown constant (BAD_REQUEST),
+        // not a data-shape mismatch (CONTRACTS 0.1.4).
+        let e = validate_value("REG_NOT_A_TYPE", &json!(1)).unwrap_err();
+        assert_eq!(e.code, Code::BadRequest);
+    }
+
+    #[test]
+    fn wrong_shape_is_type_mismatch_not_bad_request() {
+        // A well-formed value whose data does not fit the declared type stays
+        // TYPE_MISMATCH, distinct from BAD_REQUEST.
+        let e = validate_value("REG_DWORD", &json!("not a number")).unwrap_err();
+        assert_eq!(e.code, Code::TypeMismatch);
+    }
+
+    #[test]
+    fn leading_separator_path_is_bad_request() {
+        let e = Key::split_path("\\Software").unwrap_err();
+        assert_eq!(e.code, Code::BadRequest);
+    }
+
+    #[test]
+    fn qword_below_threshold_canonicalizes_to_number() {
+        // 2^32 < 2^53, so the canonical form is an integer, not a string
+        // (CONTRACTS REG_QWORD rule, matching the Windows agent).
+        let v = canonicalize_value("REG_QWORD", &json!("4294967296"));
+        assert_eq!(v, json!(4294967296u64));
+    }
+
+    #[test]
+    fn qword_above_threshold_canonicalizes_to_string() {
+        let big = (1u64 << 53) + 1;
+        let v = canonicalize_value("REG_QWORD", &json!(big));
+        assert_eq!(v, json!(big.to_string()));
     }
 }
