@@ -13,6 +13,7 @@
 //! second Linux agent can stand in for the Windows side during bring-up.
 
 mod client;
+mod corpus;
 mod differ;
 mod report;
 mod runner;
@@ -37,6 +38,7 @@ struct Args {
     tag_filter: Option<String>,
     linux_hive_dir: String,
     windows_hive_dir: String,
+    corpus_dir: PathBuf,
 }
 
 impl Default for Args {
@@ -52,6 +54,7 @@ impl Default for Args {
             tag_filter: None,
             linux_hive_dir: "/tmp".to_string(),
             windows_hive_dir: "C:\\Windows\\Temp".to_string(),
+            corpus_dir: PathBuf::from("tests/corpus/synthetic"),
         }
     }
 }
@@ -77,12 +80,14 @@ fn parse_args() -> Args {
             "--tag" => a.tag_filter = Some(next()),
             "--linux-hive-dir" => a.linux_hive_dir = next(),
             "--windows-hive-dir" => a.windows_hive_dir = next(),
+            "--corpus-dir" => a.corpus_dir = PathBuf::from(next()),
             "-h" | "--help" => {
                 println!(
                     "libreg-harness [--linux-host H] [--linux-port N] \\\n  \
                      [--windows-host H] [--windows-port N] [--tests-dir DIR] \\\n  \
                      [--results-dir DIR] [--lock-path PATH] [--tag TAG] \\\n  \
-                     [--linux-hive-dir DIR] [--windows-hive-dir DIR]"
+                     [--linux-hive-dir DIR] [--windows-hive-dir DIR] \\\n  \
+                     [--corpus-dir DIR]"
                 );
                 std::process::exit(0);
             }
@@ -211,6 +216,17 @@ fn main() -> ExitCode {
     let mut results = Vec::with_capacity(tests.len());
     for t in &tests {
         results.push(runner::run_operations(t, &agents));
+    }
+
+    // Corpus: byte-level structural invariants against real hive files. This is
+    // independent of the agents (it reads files), so it runs in every mode. The
+    // corpus is tagged `structural`, so honor the tag filter.
+    if args.tag_filter.as_deref().map_or(true, |t| t == "structural") {
+        let corpus = corpus::run_corpus(&args.corpus_dir);
+        if !corpus.is_empty() {
+            eprintln!("Loaded {} corpus hives from {}", corpus.len(), args.corpus_dir.display());
+            results.extend(corpus);
+        }
     }
 
     let now = util::now_unix();

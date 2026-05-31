@@ -62,7 +62,8 @@ sleep 1
 HARNESS_CMD=("$HARNESS_BIN"
   --linux-port "$LINUX_PORT"
   --tests-dir "$HARNESS_DIR/tests"
-  --results-dir "$HARNESS_DIR/results")
+  --results-dir "$HARNESS_DIR/results"
+  --corpus-dir "$REPO_ROOT/tests/corpus/synthetic")
 if [[ -n "$WINDOWS_HOST" ]]; then
   HARNESS_CMD+=(--windows-host "$WINDOWS_HOST" --windows-port "$WINDOWS_PORT")
 fi

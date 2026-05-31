@@ -1,19 +1,22 @@
 //! Structural invariants 1 to 18 from CONTRACTS.md.
 //!
-//! Most invariants are properties of the raw on-disk hive bytes (base block
-//! checksum, hbin chaining, cell sign, sk refcounts, and so on). The harness
-//! cannot evaluate them from the canonical JSON dump alone, and the current
-//! in-memory backend does not emit a real `regf` file. Each invariant is
-//! therefore implemented as its own function returning `Status`, so the
-//! scaffolding is complete: when a backend that produces real hive bytes lands
-//! (and the agent gains a raw-bytes accessor), the byte-level checks fill in
-//! without restructuring this module.
+//! Two entry points:
 //!
-//! Today only invariant 17 (subkey lists sorted) is observable from the
-//! canonical form, and we additionally fold in the agent's own `/hive/validate`
-//! verdict. Everything else reports `Skipped` with the reason, which the report
+//! - `check(canonical, validate)` runs against one agent's output. From the
+//!   canonical dump it evaluates invariant 17 (subkey lists sorted) and folds
+//!   in the agent's own `/hive/validate` verdict for 18; the byte-level
+//!   invariants 1 to 16 stay `Skipped` because the in-memory backend does not
+//!   emit a real `regf` file and exposes no raw bytes.
+//! - `check_bytes(bytes)` runs against a real hive file's bytes (the corpus).
+//!   It evaluates the base-block and hbin/cell invariants 1 to 6, 9, and 10
+//!   via `super::regf`. The logical-graph invariants (7, 8, 11 to 16) need a
+//!   logical parse and stay `Skipped`; 17 and 18 need the dump/validate and so
+//!   belong to `check()`.
+//!
+//! Everything not evaluated reports `Skipped` with a reason, which the report
 //! surfaces honestly rather than silently counting as a pass.
 
+use super::regf;
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +64,112 @@ pub fn check(canonical: &Value, validate: &Value) -> Vec<InvariantResult> {
 
 fn skip(id: u8, name: &'static str) -> InvariantResult {
     InvariantResult { id, name, status: Status::Skipped(NEEDS_BYTES.to_string()) }
+}
+
+fn result(id: u8, name: &'static str, status: Status) -> InvariantResult {
+    InvariantResult { id, name, status }
+}
+
+fn from_violations(v: &[String]) -> Status {
+    if v.is_empty() {
+        Status::Pass
+    } else {
+        Status::Fail(v.join("; "))
+    }
+}
+
+/// Run the byte-level structural invariants against a real hive file's bytes
+/// (a corpus hive). Implements invariants 1 to 6, 9, and 10 from the base block
+/// and the hbin/cell walk. The logical-graph invariants (7, 8, 11 to 16) need a
+/// logical parse, and 17/18 need the canonical dump and the agent validate
+/// verdict; all of those stay Skipped here. Use `check()` for the agent-output
+/// path that evaluates 17 and 18.
+pub fn check_bytes(bytes: &[u8]) -> Vec<InvariantResult> {
+    let mut out = Vec::new();
+    let bb = regf::parse_base_block(bytes);
+    let w = regf::walk_hbins(bytes);
+
+    out.push(result(
+        1,
+        "base block magic 'regf'",
+        match &bb {
+            Some(b) if b.magic_ok => Status::Pass,
+            Some(_) => Status::Fail("base block signature is not 'regf'".into()),
+            None => Status::Fail(format!(
+                "file is {} bytes, shorter than a 4096-byte base block",
+                bytes.len()
+            )),
+        },
+    ));
+
+    if let Some(b) = &bb {
+        out.push(result(
+            2,
+            "primary sequence == secondary sequence",
+            if b.primary_seq == b.secondary_seq {
+                Status::Pass
+            } else {
+                Status::Fail(format!(
+                    "primary {} != secondary {} (hive awaiting log recovery)",
+                    b.primary_seq, b.secondary_seq
+                ))
+            },
+        ));
+        out.push(result(
+            3,
+            "base block checksum matches",
+            if b.stored_checksum == b.computed_checksum {
+                Status::Pass
+            } else {
+                Status::Fail(format!(
+                    "stored checksum {:#010x} != computed {:#010x}",
+                    b.stored_checksum, b.computed_checksum
+                ))
+            },
+        ));
+        out.push(result(
+            4,
+            "hive bins data size matches hbin total",
+            if b.hive_bins_data_size as usize == w.total_hbin_bytes {
+                Status::Pass
+            } else {
+                Status::Fail(format!(
+                    "base block says {} bytes of bins, hbins total {}",
+                    b.hive_bins_data_size, w.total_hbin_bytes
+                ))
+            },
+        ));
+    } else {
+        for (id, name) in [
+            (2, "primary sequence == secondary sequence"),
+            (3, "base block checksum matches"),
+            (4, "hive bins data size matches hbin total"),
+        ] {
+            out.push(result(id, name, Status::Skipped("no base block to read".into())));
+        }
+    }
+
+    out.push(result(5, "hbin magic and 4096 alignment", from_violations(&w.hbin_violations)));
+    out.push(result(6, "cell size nonzero and multiple of 8", from_violations(&w.cell_size_violations)));
+    out.push(result(9, "sum of cell sizes == hbin size - 32-byte header", from_violations(&w.cell_sum_violations)));
+    out.push(result(10, "no cell crosses an hbin boundary", from_violations(&w.boundary_violations)));
+
+    let needs_logical = "requires a logical-tree parse (not implemented for static byte checks)";
+    for (id, name) in [
+        (7, "allocated cells form a tree from root"),
+        (8, "free cells tracked in free list"),
+        (11, "subkey list cell type promotion lf/lh/ri"),
+        (12, "big-data cells only above 16344 bytes"),
+        (13, "security cells doubly linked with refcounts"),
+        (14, "sk refcounts accurate"),
+        (15, "class name strings are UTF-16LE"),
+        (16, "key names UTF-16LE, or Latin-1 when KEY_COMP_NAME (0x0020) is set"),
+    ] {
+        out.push(result(id, name, Status::Skipped(needs_logical.into())));
+    }
+    out.push(result(17, "subkey lists sorted", Status::Skipped("needs the canonical dump; use check()".into())));
+    out.push(result(18, "transaction logs valid or absent", Status::Skipped("needs the agent validate verdict".into())));
+    out
 }
 
 /// Invariant 17: subkey lists are sorted (binary search is valid). Observable
