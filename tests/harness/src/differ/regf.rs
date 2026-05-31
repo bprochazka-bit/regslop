@@ -13,8 +13,14 @@
 pub const BASE_BLOCK_LEN: usize = 4096;
 pub const HBIN_HEADER_LEN: usize = 32;
 
-fn u32_at(b: &[u8], off: usize) -> u32 {
+/// Little-endian u32 at byte offset `off`.
+pub fn u32_at(b: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+}
+
+/// Little-endian u16 at byte offset `off`.
+pub fn u16_at(b: &[u8], off: usize) -> u16 {
+    u16::from_le_bytes([b[off], b[off + 1]])
 }
 
 pub struct BaseBlock {
@@ -64,6 +70,16 @@ pub fn compute_checksum(b: &[u8]) -> u32 {
     }
 }
 
+/// One cell located by the walk. `content_start` is a FILE offset (so callers
+/// can index the hive bytes directly); `content` spans `abs(size) - 4` bytes,
+/// the first two of which are the cell's 2-byte type signature for an allocated
+/// cell with a typed payload (nk, vk, sk, lf, lh, li, ri, db).
+pub struct Cell {
+    pub content_start: usize,
+    pub content_len: usize,
+    pub allocated: bool,
+}
+
 /// Findings from walking the whole hbin/cell structure. Each vec holds the
 /// human-readable violations for one invariant; empty means the invariant held.
 #[derive(Default)]
@@ -78,6 +94,9 @@ pub struct Walk {
     pub boundary_violations: Vec<String>,
     /// Total bytes the walk consumed: the actual total of all hbins (inv4).
     pub total_hbin_bytes: usize,
+    /// Every cell the walk located, allocated and free (inv11, inv16 read the
+    /// allocated, signed ones).
+    pub cells: Vec<Cell>,
 }
 
 /// Walk the hbin chain after the base block, collecting per-invariant
@@ -138,6 +157,11 @@ pub fn walk_hbins(bytes: &[u8]) -> Walk {
                     .push(format!("cell at +{cpos:#x}: size {cell_size} crosses hbin boundary"));
                 break;
             }
+            w.cells.push(Cell {
+                content_start: BASE_BLOCK_LEN + cpos + 4,
+                content_len: cell_size - 4,
+                allocated: raw < 0,
+            });
             sum += cell_size;
             cpos += cell_size;
         }

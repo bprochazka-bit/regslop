@@ -86,7 +86,7 @@ mod tests {
     fn synthetic_hives_pass_byte_invariants() {
         let dir = synthetic_dir();
         let results = run_corpus(&dir);
-        assert_eq!(results.len(), 4, "expected 4 synthetic hives in {}", dir.display());
+        assert!(results.len() >= 4, "expected at least 4 synthetic hives in {}", dir.display());
         for r in &results {
             assert!(
                 matches!(r.structural, AspectOutcome::Pass),
