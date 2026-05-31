@@ -23,6 +23,10 @@ pub struct Client {
     hive_dir: String,
     /// Whether this agent uses Windows-style paths (backslash separator).
     windows_style: bool,
+    /// Host to pull this agent's saved hive files from over SMB, for byte-level
+    /// structural validation. Set only for the Windows agent when `--windows-smb`
+    /// is on; `None` means no SMB byte-pull.
+    smb_host: Option<String>,
 }
 
 /// The standard response envelope from CONTRACTS.md.
@@ -55,7 +59,18 @@ impl Client {
             name: name.into(),
             hive_dir: "/tmp".to_string(),
             windows_style: false,
+            smb_host: None,
         }
+    }
+
+    /// Pull this agent's saved hives from `host` over SMB (Windows agent only).
+    pub fn set_smb_host(&mut self, host: String) {
+        self.smb_host = Some(host);
+    }
+
+    /// The SMB host to pull saved hives from, if byte-pull is enabled.
+    pub fn smb_host(&self) -> Option<&str> {
+        self.smb_host.as_deref()
     }
 
     /// Set where this agent stores hive files and which path style it uses.

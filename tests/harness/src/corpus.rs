@@ -53,7 +53,12 @@ pub fn run_corpus(dir: &Path) -> Vec<TestResult> {
 }
 
 fn empty_seq() -> SeqResult {
-    SeqResult { op_results: Vec::new(), snapshots: HashMap::new(), roundtrip_dumps: HashMap::new() }
+    SeqResult {
+        op_results: Vec::new(),
+        snapshots: HashMap::new(),
+        roundtrip_dumps: HashMap::new(),
+        byte_invariants: HashMap::new(),
+    }
 }
 
 /// Fold the per-invariant results into one `structural` outcome: any Fail makes

@@ -86,6 +86,11 @@ pub struct SeqResult {
     pub op_results: Vec<OpResult>,
     pub snapshots: HashMap<String, Snapshot>,
     pub roundtrip_dumps: HashMap<String, Value>,
+    /// Byte-level structural invariant results per saved hive, from pulling the
+    /// agent's on-disk hive over SMB and running `structural::check_bytes`. Only
+    /// populated for the Windows agent when `--windows-smb` is on; empty
+    /// otherwise (the in-memory Linux backend emits no `regf` bytes).
+    pub byte_invariants: HashMap<String, Vec<structural::InvariantResult>>,
 }
 
 pub struct TestResult {
@@ -324,7 +329,28 @@ fn run_sequence(client: &Client, test: &TestDef) -> SeqResult {
         }
     }
 
-    SeqResult { op_results, snapshots, roundtrip_dumps }
+    // SMB byte-pull: for the Windows agent (offreg), pull each saved hive off
+    // the VM and run the byte-level structural invariants on it. A pull failure
+    // is a warning, never a test failure (the VM may be down).
+    let mut byte_invariants = HashMap::new();
+    if let Some(host) = client.smb_host() {
+        for var in &saved {
+            let Some(path) = paths.get(var) else { continue };
+            let base = path.rsplit(['\\', '/']).next().unwrap_or(path);
+            let local = std::env::temp_dir().join(format!("harness-smb-{base}"));
+            match crate::smb::pull(host, base, &local) {
+                Ok(()) => {
+                    if let Ok(bytes) = std::fs::read(&local) {
+                        byte_invariants.insert(var.clone(), structural::check_bytes(&bytes));
+                    }
+                    let _ = std::fs::remove_file(&local);
+                }
+                Err(e) => eprintln!("warning: SMB pull of {base} for byte checks failed: {e}"),
+            }
+        }
+    }
+
+    SeqResult { op_results, snapshots, roundtrip_dumps, byte_invariants }
 }
 
 /// Run a test against both agents and compute per-axis outcomes. This is the
@@ -504,6 +530,17 @@ fn compute_structural(test: &TestDef, linux: &SeqResult, windows: Option<&SeqRes
                 if let structural::Status::Fail(msg) = r.status {
                     failures.push(format!(
                         "{agent_name} hive '{var}' invariant {} ({}): {msg}",
+                        r.id, r.name
+                    ));
+                }
+            }
+            // Byte-level invariants from the SMB-pulled hive (Windows side),
+            // when present, replace the Skipped 1 to 16 placeholders with real
+            // results.
+            for r in seq.byte_invariants.get(var).into_iter().flatten() {
+                if let structural::Status::Fail(msg) = &r.status {
+                    failures.push(format!(
+                        "{agent_name} hive '{var}' invariant {} ({}) [bytes]: {msg}",
                         r.id, r.name
                     ));
                 }
