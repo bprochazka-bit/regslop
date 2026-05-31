@@ -4,10 +4,35 @@ Last session: 2026-05-30
 
 ## CONTRACTS.md
 
-- Current version: 0.1.0 (in main).
-- Proposed: 0.1.1 PATCH (clarifications + one typo fix) prepared on branch
-  `spec/contracts-clarify-0.1.1`, separate PR labeled `contracts`. Not
-  bundled with docs per CLAUDE.md universal rule 1.
+- 0.1.0: initial (merged).
+- 0.1.1 PATCH: invariant clarifications + the KEY_COMP_NAME typo fix
+  (merged, PR #2).
+- 0.1.2 MINOR: resolves the Windows agent's spec requests (PR #4, branch
+  `spec/contracts-0.1.2`). Adds error code KEY_HAS_CHILDREN; clarifies
+  /key/security GET vs POST; defines canonical SDDL normalization (see ADR
+  0003); specifies /key/rename subtree preservation and the harness
+  last_write exclusion under a renamed path; sharpens the sort comparator.
+
+## Windows agent requests (resolved 2026-05-30)
+
+Source: agents/windows/STATE.md "Spec items to raise" + assumptions.
+
+- KEY_HAS_CHILDREN error code: ADDED in 0.1.2.
+- /key/rename last_write: DECISION (with user) = exclude last_write under
+  the renamed path from semantic comparison; subtree otherwise preserved.
+  In 0.1.2.
+- /key/security read vs write: by HTTP method, not sddl presence. In 0.1.2.
+- SACL / SDDL canonical form (assumption 6): ADR 0003; compare O/G/D
+  always, SACL only when both report one. In 0.1.2.
+- Sort comparator (assumption 7): confirmed case-insensitive Unicode
+  ordinal, casing preserved; siblings are case-insensitive-unique. In
+  0.1.2.
+
+Downstream work this creates (for the owning agents, not the spec agent):
+library emits KEY_HAS_CHILDREN and may preserve rename timestamps; harness
+implements the last_write exclusion and the SDDL normalization; Windows
+agent switches to method-based security dispatch and maps the
+key-has-children case to the new code.
 
 ## Done this session
 
@@ -69,12 +94,13 @@ Clarifications / typos to fix in CONTRACTS.md (all PATCH, no wire change):
    Leaning keep-as-null; waiting to see if offreg reports nonnull classes
    on any corpus hive.
 
-## Pending ADRs (not yet written)
+## Pending ADRs
 
-- 0003 SDDL over binary security descriptors on the wire (referenced by
-  hive-format.md section 3.3; write when the security path is exercised).
+- 0003 SDDL on the wire / normalized binary diff: WRITTEN and accepted
+  (docs PR with this STATE update).
 - 0004 dual transaction logs design rationale (why two logs, recovery
-  ordering). Write alongside resolving open question 2.
+  ordering). Still pending; write alongside resolving the minor-version
+  open question.
 
 ## Environment note
 

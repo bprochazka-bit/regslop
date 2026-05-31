@@ -8,5 +8,5 @@ append-only history: supersede, do not rewrite.
 |------|-----------------------------------------|----------|
 | 0001 | HTTP + JSON for the agent protocol      | accepted |
 | 0002 | Canonical JSON form for semantic diff   | accepted |
-| 0003 | SDDL over binary security descriptors   | planned  |
+| 0003 | SDDL on the wire, normalized binary diff | accepted |
 | 0004 | Dual transaction logs                    | planned  |
