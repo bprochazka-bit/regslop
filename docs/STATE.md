@@ -1,7 +1,8 @@
 # Spec Agent STATE
 
-Last session: 2026-05-31 (cleared the entire inbound spec-questions queue:
-0.1.3 through 0.1.6 plus ADR 0004).
+Last session: 2026-05-31 (triaged the two later library questions #22/#23 as
+corpus-gated bytewise items, PR #25; recorded downstream conformance status).
+Prior session cleared the inbound queue: 0.1.3 through 0.1.6 plus ADR 0004.
 
 ## CONTRACTS.md
 
@@ -82,23 +83,27 @@ The work the 0.1.2 decisions created for the owning agents has landed:
 - ADR 0004 (PR #18, merged): dual transaction logs + a proposed recovery
   control surface (see Pending ADRs).
 
-## Inbound spec questions from implementation agents: ALL RESOLVED
+## Inbound spec questions from implementation agents
 
 Raised in agents/linux/spec-questions.md and tests/harness/spec-questions.md.
-The full queue is cleared this session. None required inventing a wire
-endpoint; each pinned existing green behavior or (recovery) was captured as
-a design proposal.
+The original queue (the items below) is cleared; none required inventing a
+wire endpoint, each pinned existing green behavior or (recovery) was captured
+as a design proposal. Two later library questions (#22, #23) are triaged and
+corpus-gated; see "Later library questions" below.
 
 - **Default security descriptor for a fresh key (issue #11).** Ratified the
   offreg-observed default
   `O:BAG:BAD:(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;WD)(A;CI;KR;;;RC)` in
-  0.1.3; asserted by `semantic`. Issue #11 closed. DOWNSTREAM STILL OWED:
-  the real libreg backend must emit it (the Linux agent hardcodes it as a
-  stand-in).
+  0.1.3; asserted by `semantic`. Issue #11 closed. DOWNSTREAM: the library
+  agent built the binary SD codec + this default in libreg (PR #21); the
+  create-path consumer is step 4 (not done yet). The Linux MemBackend still
+  hardcodes the SDDL as a stand-in.
 - **BAD_REQUEST error code (linux Q2).** Added in 0.1.4: malformed request
   (bad JSON, missing/wrong-typed field, unknown constant) returns
   BAD_REQUEST; INTERNAL is reserved for agent bugs on a well-formed request.
-  Downstream: both agents remap malformed requests off INTERNAL.
+  DOWNSTREAM: the Linux agent conformed (PR #26). The Windows agent has NOT
+  yet adopted BAD_REQUEST (still INTERNAL/TYPE_MISMATCH); their conformance
+  work, flagged in agents/linux/spec-questions.md item 2.
 - **/key/create intermediate-key semantics (linux Q3).** Pinned in 0.1.5:
   creates all missing intermediates (RegCreateKeyEx-style), reuses existing
   ones, KEY_EXISTS only when the leaf exists. Verified by reading the
@@ -125,6 +130,27 @@ Resolved/non-action (recorded so they are not re-litigated):
   reported n/a, not counted as passes. Revisit when a real backend lands.
 - harness Q3 (SACL-present security sub-tag): deferred to the harness agent
   per ADR 0003; revisit with the corpus loader.
+
+## Later library questions (#22, #23): triaged, corpus-gated, non-blocking
+
+Filed by the library agent after the original queue. Both turned out to be
+bytewise-only and do NOT block the `semantic` milestone. Triaged in PR #25,
+which added a "What the differ compares (semantic vs bytewise)" subsection to
+docs/hive-format.md. Both issues left OPEN as corpus-gated bytewise items.
+
+- **#23 single-subkey create canonical form.** Answered for `semantic`: a
+  created subkey needs only the correct logical form (name, KEY_COMP_NAME for
+  ASCII, parent = root, security resolving to the right SDDL via a shared sk
+  refcount bump, siblings name-sorted, parent subkey_count = 1). The on-disk
+  list type (write `lh` for v1.5+) and cell placement are bytewise-only; the
+  canonical form carries names, not list type or offsets, and the harness
+  skips invariant 11. Placement is an allocator choice, not the spec's to
+  dictate. So step 4 is unblocked for semantic-green; exact byte parity is
+  deferred to bytewise (a warning, n/a until libreg emits regf bytes).
+- **#22 lh non-ASCII name hash.** Bytewise-only; the hash never appears in
+  the canonical form. ASCII names already hash correctly. The exact
+  RtlUpcaseUnicodeChar table / Latin-1-to-UTF-16 question needs an
+  offreg-produced reference hive with non-ASCII names. Corpus-gated.
 
 ## Open spec questions (mine; still NOT resolved; do not guess in code)
 
@@ -157,7 +183,9 @@ Resolved/non-action (recorded so they are not re-litigated):
 - 0001 HTTP+JSON: accepted (PR #1); extended PR #17 with the
   query-string-vs-body decision.
 - 0002 canonical form: accepted (PR #1).
-- 0003 SDDL on the wire / normalized binary diff: accepted (PR #5).
+- 0003 SDDL on the wire / normalized binary diff: accepted (PR #5). The
+  semantic-vs-bytewise boundary it implies for subkey lists/hashes was
+  spelled out in docs/hive-format.md by PR #25 (triage of #22, #23).
 - 0004 dual transaction logs + recovery control surface: PROPOSED (PR #18).
   Documents the dual-log rationale and proposes a Linux-only
   POST /test/crash_save for the recovery tag. NOT in CONTRACTS yet. Moves to
@@ -185,11 +213,16 @@ Resolved/non-action (recorded so they are not re-litigated):
 The inbound queue is empty. Remaining work is blocked on other agents or on
 corpus/VM availability, not on a spec decision:
 
-- Watch for downstream follow-ups: the library backend emitting the ratified
-  default SDDL (0.1.3), both agents remapping malformed requests to
-  BAD_REQUEST (0.1.4), and the library agent's dual-log recovery + the
-  /test/crash_save prototype (ADR 0004). Review any PR that touches
-  CONTRACTS.md or crosses a subtree boundary.
+- Watch for downstream follow-ups and review any PR touching CONTRACTS.md or
+  crossing a subtree boundary. Status as of this session:
+  - Library: SD codec + ratified default landed (PR #21); Layer 1 allocator
+    landed (PR #27). Still owed: the step 4 create path that consumes the
+    default, and the dual-log recovery + /test/crash_save prototype (ADR
+    0004).
+  - Linux agent: conformed to BAD_REQUEST (PR #26).
+  - Windows agent: still owes BAD_REQUEST conformance (item flagged in
+    agents/linux/spec-questions.md item 2). Not a spec question; nudge if a
+    malformed-request differential test is added.
 - When the ADR 0004 hook lands, add POST /test/crash_save to CONTRACTS as a
   MINOR (test-mode, Linux only, Windows not_supported) and move ADR 0004 to
   accepted.
