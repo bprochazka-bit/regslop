@@ -4,7 +4,7 @@ This file is the single source of truth for interfaces between components.
 All agents read this file. Only the spec agent writes to it.
 Changes require a PR labeled `contracts` and a version bump.
 
-**Current version: 0.1.1**
+**Current version: 0.1.2**
 
 ## Versioning
 
@@ -91,6 +91,16 @@ GET  /key/info      { "handle", "path" }
 Path separator is `\\` (escaped backslash in JSON, literal backslash in path).
 Paths never start with a separator. Empty string `""` means the hive root.
 
+`/key/rename` MUST preserve the renamed key's values, class name, security,
+and its entire subkey subtree (names, values, security). It MAY update the
+renamed key's own `last_write`. Because the Windows oracle has no native
+rename and emulates it by create plus subtree copy plus delete, copied
+descendants receive fresh timestamps; the oracle therefore cannot preserve
+descendant `last_write`. For this reason the harness EXCLUDES `last_write`
+from semantic comparison for the renamed key and every key beneath it. The
+library MAY still preserve descendant timestamps natively; that is correct
+but not asserted by the `semantic` tag.
+
 ### Value operations
 
 ```
@@ -125,9 +135,20 @@ GET  /key/security  { "handle", "path" }
 POST /key/security  { "handle", "path", "sddl": "..." }
 ```
 
+Read and write are distinguished by HTTP method, not by request body:
+`GET /key/security` reads (no `sddl` in the request) and `POST /key/security`
+writes (the `sddl` field is REQUIRED on POST). Agents MUST NOT infer the
+operation from the presence of the `sddl` field.
+
 Security descriptors transit as SDDL strings. Agents are responsible for
 converting to/from the binary form. The harness compares both SDDL and
 canonical binary form.
+
+For comparison the SDDL is normalized to the owner, group, and DACL
+components (`O:`, `G:`, `D:`). The SACL (`S:`) is compared only when BOTH
+agents report one: offline hives do not always expose a readable SACL and
+offreg may omit it, so a one-sided SACL is not a semantic difference. See
+`docs/adr/0003-sddl-security.md` for the normalization rules and rationale.
 
 ### Diagnostics
 
@@ -171,9 +192,12 @@ comparison. Field order matters (use sorted keys). Whitespace does not
 
 Rules:
 
-- `subkeys` and `values` arrays are sorted lexicographically by `name`
-- `name` comparisons are case-insensitive per Windows semantics, but the
-  original casing is preserved in the JSON
+- `subkeys` and `values` arrays are sorted by `name` using a
+  case-insensitive Unicode ordinal comparison (compare names uppercased,
+  per Windows semantics); the original casing is preserved in the JSON.
+  Both agents MUST use this same comparator or semantic diffs will fire on
+  ordering alone. Sibling names are case-insensitive-unique in a hive, so
+  no casing tiebreak is reachable in valid data.
 - `last_write` is ISO 8601 UTC with second precision; nanoseconds are
   dropped during canonicalization to allow cross-platform comparison
 - `class_name` is null when absent, never an empty string
@@ -251,6 +275,7 @@ pass are warnings, not errors.
 | TYPE_MISMATCH         | data shape does not match declared type         |
 | ACCESS_DENIED         | security descriptor blocks operation            |
 | LOG_CORRUPT           | transaction log replay failed                   |
+| KEY_HAS_CHILDREN      | non-recursive delete of a key that has subkeys   |
 | INTERNAL              | bug; include stack/trace in error string        |
 
 ## What This Document Does Not Cover
@@ -262,6 +287,14 @@ pass are warnings, not errors.
 
 ## Change Log
 
+- 0.1.2 (minor): add error code `KEY_HAS_CHILDREN` (non-recursive delete of
+  a key with subkeys; was surfaced as `INTERNAL`). Clarify `/key/security`
+  read vs write is by HTTP method (GET vs POST), not by `sddl` presence.
+  Define canonical SDDL normalization (O/G/D always, SACL only when both
+  sides report one; see ADR 0003). Specify `/key/rename` preserves the
+  subtree and that the harness excludes `last_write` under a renamed path
+  from semantic comparison. Sharpen the canonical sort comparator
+  (case-insensitive Unicode ordinal). Additive only; no breaking change.
 - 0.1.1 (patch): clarifications only, no wire or format change. Invariant 3
   checksum computation made precise (127 dwords / bytes 0..507, plus the
   0 and 0xFFFFFFFF quirks). Invariant 4 reworded to "hive bins data size"
