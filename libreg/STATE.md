@@ -2,6 +2,9 @@
 
 Last updated: 2026-05-31 (library agent)
 
+Open PR: https://github.com/bprochazka-bit/regslop/pull/20 (Layer 0
+format modules through lf/lh subkey lists, agent/library -> main).
+
 ## Current layer
 
 Layer 0 (`format/`). Steps 1 and 2 done. Step 3 (empty hive creation) is
