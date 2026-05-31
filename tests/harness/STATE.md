@@ -2,6 +2,25 @@
 
 Last updated: 2026-05-31
 
+## Read-op response comparison (latest session)
+
+Closed a real gap: the harness compared only the final hive dump, never the
+response payloads of read ops, so a read endpoint returning wrong data despite
+correct storage (a bad `/key/list` order, a wrong `/key/info` count, a
+divergent `/value/get`) would slip through. Now `OpResult` carries the response
+`data` for successful read ops (`key_list`, `key_info`, `value_get`,
+`key_security_get`), and `compare_op_results` diffs them cross-agent by reusing
+the semantic differ (so `last_write` is ignored and `sddl` is normalized, SACL
+conditional). Hard divergences become `problems` (fail the test); a one-sided
+SACL from `key_security_get` is a `semantic` warning, not a failure. New
+`tests/reads.yaml` (3 tests) exercises all four read endpoints. Live VM run is
+GREEN, 14/14 semantic, confirming offreg and the Linux agent agree on every
+read-endpoint response (default and explicit SDDL included).
+
+The recovery tag is still the next substantial effort and remains blocked on
+the library agent (ADR 0004: the `/test/crash_save` hook is not in CONTRACTS
+until libreg has a working log-recovery path; Rule 7 forbids inventing it).
+
 ## CONTRACTS 0.1.3 to 0.1.6 (latest session)
 
 The harness needs NO code change for these: 0.1.3 (default SDDL) is already
