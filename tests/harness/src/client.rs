@@ -15,6 +15,14 @@ pub struct Client {
     agent: ureq::Agent,
     base: String,
     pub name: String,
+    /// Directory on THIS agent's filesystem where hive files are created. Hive
+    /// paths in tests are logical; the harness rewrites them per agent because
+    /// the path is a real filesystem path on the agent (CONTRACTS.md error
+    /// table: HIVE_NOT_FOUND = "path does not exist on agent's filesystem"), and
+    /// a Linux path like `/tmp/x.hiv` is not valid for offreg on Windows.
+    hive_dir: String,
+    /// Whether this agent uses Windows-style paths (backslash separator).
+    windows_style: bool,
 }
 
 /// The standard response envelope from CONTRACTS.md.
@@ -45,6 +53,30 @@ impl Client {
             agent: config.into(),
             base: format!("http://{host}:{port}"),
             name: name.into(),
+            hive_dir: "/tmp".to_string(),
+            windows_style: false,
+        }
+    }
+
+    /// Set where this agent stores hive files and which path style it uses.
+    /// Driven by the agent's reported `agent` field from the handshake, so a
+    /// Linux stand-in posing as the Windows side still gets Linux paths.
+    pub fn set_hive_location(&mut self, dir: String, windows_style: bool) {
+        self.hive_dir = dir;
+        self.windows_style = windows_style;
+    }
+
+    /// Map a logical hive path from a test into a path valid on this agent's
+    /// filesystem: keep the basename, place it under the agent's hive dir, using
+    /// the agent's path separator. The mapping is deterministic, so a later
+    /// `hive_load` of the same logical path resolves to the same file.
+    pub fn map_hive_path(&self, logical: &str) -> String {
+        let base = logical.rsplit(['/', '\\']).next().unwrap_or(logical);
+        let dir = self.hive_dir.trim_end_matches(['/', '\\']);
+        if self.windows_style {
+            format!("{dir}\\{base}")
+        } else {
+            format!("{dir}/{base}")
         }
     }
 

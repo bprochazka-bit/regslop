@@ -6,11 +6,16 @@
 use crate::error::{AgentError, Result};
 use serde::{Deserialize, Serialize};
 
-/// Default security descriptor applied to a freshly created key. offreg uses a
-/// different default, so this will diverge on the `bytewise`/`security` tags
-/// until a real backend supplies the true inherited descriptor. Tracked in
-/// agents/linux/spec-questions.md.
-pub const DEFAULT_SDDL: &str = "O:BAG:BAD:(A;;KA;;;BA)(A;;KA;;;SY)";
+/// Default security descriptor applied to a freshly created key. This matches
+/// the default that the offreg oracle produces for a fresh offline hive,
+/// observed live on the Windows VM (2026-05-31): owner/group BA, and a DACL of
+/// SYSTEM (full), Administrators (full), Everyone (read), and Restricted Code
+/// (read), all container-inheritable. The harness differ confirmed an
+/// identical descriptor on both sides once this matched. The canonical default
+/// is not yet specified in CONTRACTS.md; pending a spec decision this mirrors
+/// the oracle. Tracked in agents/linux/spec-questions.md.
+pub const DEFAULT_SDDL: &str =
+    "O:BAG:BAD:(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;WD)(A;CI;KR;;;RC)";
 
 /// Deterministic last-write timestamp for the in-memory backend. A real
 /// backend stamps wall-clock time; the harness differ ignores `last_write` by

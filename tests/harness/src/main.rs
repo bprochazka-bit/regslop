@@ -35,6 +35,8 @@ struct Args {
     results_dir: PathBuf,
     lock_path: PathBuf,
     tag_filter: Option<String>,
+    linux_hive_dir: String,
+    windows_hive_dir: String,
 }
 
 impl Default for Args {
@@ -48,6 +50,8 @@ impl Default for Args {
             results_dir: PathBuf::from("tests/harness/results"),
             lock_path: PathBuf::from("/tmp/libreg-winvm.lock"),
             tag_filter: None,
+            linux_hive_dir: "/tmp".to_string(),
+            windows_hive_dir: "C:\\Windows\\Temp".to_string(),
         }
     }
 }
@@ -71,11 +75,14 @@ fn parse_args() -> Args {
             "--results-dir" => a.results_dir = PathBuf::from(next()),
             "--lock-path" => a.lock_path = PathBuf::from(next()),
             "--tag" => a.tag_filter = Some(next()),
+            "--linux-hive-dir" => a.linux_hive_dir = next(),
+            "--windows-hive-dir" => a.windows_hive_dir = next(),
             "-h" | "--help" => {
                 println!(
                     "libreg-harness [--linux-host H] [--linux-port N] \\\n  \
                      [--windows-host H] [--windows-port N] [--tests-dir DIR] \\\n  \
-                     [--results-dir DIR] [--lock-path PATH] [--tag TAG]"
+                     [--results-dir DIR] [--lock-path PATH] [--tag TAG] \\\n  \
+                     [--linux-hive-dir DIR] [--windows-hive-dir DIR]"
                 );
                 std::process::exit(0);
             }
@@ -137,8 +144,8 @@ fn main() -> ExitCode {
     let args = parse_args();
 
     let (lhost, lport) = split_host_port(&args.linux_host, args.linux_port);
-    let linux = Client::new("linux", &lhost, lport);
-    let windows = args.windows_host.as_ref().map(|h| {
+    let mut linux = Client::new("linux", &lhost, lport);
+    let mut windows = args.windows_host.as_ref().map(|h| {
         let (whost, wport) = split_host_port(h, args.windows_port);
         Client::new("windows", &whost, wport)
     });
@@ -149,6 +156,7 @@ fn main() -> ExitCode {
         .unwrap_or_else(|e| fatal(format!("{e}\nIs the Linux agent running on {lhost}:{lport}?")));
     eprintln!("Linux agent: agent={} protocol={} backend={}", lh.agent, lh.protocol, lh.backend);
     let mut windows_backend = None;
+    let mut windows_agent = None;
     if let Some(w) = &windows {
         let wh = w.version().unwrap_or_else(|e| {
             fatal(format!(
@@ -165,7 +173,21 @@ fn main() -> ExitCode {
                 lh.protocol, wh.protocol
             ));
         }
+        windows_agent = Some(wh.agent.clone());
         windows_backend = Some(wh.backend);
+    }
+
+    // Map logical hive paths to each agent's filesystem. The path style follows
+    // the agent's reported `agent` field, not which side it is wired to, so a
+    // Linux stand-in posing as the Windows side still gets Linux paths.
+    let configure = |c: &mut Client, agent: &str| {
+        let win = agent == "windows";
+        let dir = if win { args.windows_hive_dir.clone() } else { args.linux_hive_dir.clone() };
+        c.set_hive_location(dir, win);
+    };
+    configure(&mut linux, &lh.agent);
+    if let (Some(w), Some(wa)) = (windows.as_mut(), windows_agent.as_ref()) {
+        configure(w, wa);
     }
 
     // The Windows VM is a shared resource: serialize harness runs behind an

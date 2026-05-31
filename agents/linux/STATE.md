@@ -2,6 +2,21 @@
 
 Last updated: 2026-05-31
 
+## First live VM differential run (2026-05-31)
+
+Validated against the real offreg oracle on the VM. Two Linux-agent fixes the
+run surfaced, both now GREEN against the VM:
+
+- **REG_QWORD encoding.** Was emitting a sub-2^53 QWORD as a string; CONTRACTS
+  says integer (string only above 2^53). Added `canonicalize_value` in
+  `backend.rs`, applied at `value_set`, mirroring the Windows `v > (1<<53)` rule.
+- **Default security descriptor.** The placeholder default (2 ACEs) diverged
+  from offreg's real 4-ACE default on every key. Captured offreg's default live
+  and set `model::DEFAULT_SDDL` to match:
+  `O:BAG:BAD:(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;WD)(A;CI;KR;;;RC)`. This is a
+  stand-in default pending spec ratification (see `spec-questions.md` item 4);
+  the real libreg backend must produce the same descriptor.
+
 ## CONTRACTS 0.1.2 conformance (this session)
 
 Brought the Linux agent up to CONTRACTS 0.1.2, mirroring the Windows agent
@@ -67,5 +82,6 @@ Brought the Linux agent up to CONTRACTS 0.1.2, mirroring the Windows agent
 1. Add `LibregBackend` once `libreg::api` is callable; wire `--backend libreg`.
 2. Expose a raw-bytes accessor (`/hive/raw` or extend `/hive/checksum`) so the
    harness structural checker can evaluate invariants 1 to 18 on real hives.
-3. Resolve the spec-questions, especially the default security descriptor,
-   which currently guarantees a `security`/`bytewise` divergence.
+3. Get the default security descriptor ratified in CONTRACTS.md. It now matches
+   the offreg oracle (so `semantic` is GREEN), but it is an observed value, not
+   a specified one; see `spec-questions.md` item 4.
