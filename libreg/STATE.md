@@ -242,18 +242,18 @@ harness reports the Windows agent loading a libreg empty hive cleanly.
    reference hive (or harness confirmation) to replace the `empty_hive.rs` /
    `sk.rs` root placeholders. Do NOT assume the root reuses the created-key
    default.
-3. STILL OPEN. lh name hash for non-ASCII names: `lh::name_hash` upcases
-   only ASCII (a-z); the kernel uses `RtlUpcaseUnicodeChar`. Confirm the
-   upcase table offreg applies (and whether comp-name Latin-1 bytes expand
-   to UTF-16 before hashing) so non-ASCII subkey names hash to byte-equal lh
-   elements. ASCII names are already correct. Not yet raised to the spec
-   agent.
-4. STILL OPEN (gates step 4). Single-subkey create canonical form: lf vs lh,
-   where the list cell is placed (same bin?), and the child nk fields
-   (KEY_COMP_NAME for an ASCII name, parent = root offset, security shared
-   with root via refcount bump). Needs an offreg reference hive or harness
-   confirmation before wiring the create path; Hard Rule 4, do not guess.
-   Not yet raised to the spec agent.
+3. STILL OPEN, RAISED as issue #22 (`spec`). lh name hash for non-ASCII
+   names: `lh::name_hash` upcases only ASCII (a-z); the kernel uses
+   `RtlUpcaseUnicodeChar`. Confirm the upcase table offreg applies (and
+   whether comp-name Latin-1 bytes expand to UTF-16 before hashing) so
+   non-ASCII subkey names hash to byte-equal lh elements. ASCII names are
+   already correct.
+4. STILL OPEN (gates step 4), RAISED as issue #23 (`spec`). Single-subkey
+   create canonical form: lf vs lh, where the list cell is placed (same
+   bin?), and the child nk fields (KEY_COMP_NAME for an ASCII name, parent =
+   root offset, security shared with root via refcount bump). Needs an
+   offreg reference hive or harness confirmation before wiring the create
+   path; Hard Rule 4, do not guess.
 
 ## What I would do next session
 
