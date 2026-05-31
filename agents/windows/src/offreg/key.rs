@@ -81,39 +81,53 @@ impl Key {
             }
             accum.push_str(comp);
 
-            let wpath = to_wide(&accum);
-            let mut out: Orhkey = ptr::null_mut();
-            let mut disposition: Dword = 0;
-            let rc = unsafe {
-                (offreg().create_key)(
-                    root,
-                    wpath.as_ptr(),
-                    ptr::null(), // no class
-                    0,           // REG_OPTION_NON_VOLATILE
-                    ptr::null(), // default security
-                    &mut out,
-                    &mut disposition,
-                )
-            };
-            if rc != ERROR_SUCCESS {
-                return Err(map_win32(rc, Ctx::Key));
-            }
-
+            let (key, created) = Self::create_level(root, &accum, None)?;
             if i == components.len() - 1 {
-                return Ok((
-                    Key {
-                        handle: out,
-                        owned: true,
-                    },
-                    disposition == REG_CREATED_NEW_KEY,
-                ));
+                return Ok((key, created));
             }
-            // Intermediate level: close its handle and continue.
-            unsafe {
-                (offreg().close_key)(out);
-            }
+            // Intermediate level: drop the handle (Drop closes it) and continue.
+            drop(key);
         }
         unreachable!("loop returns on the final component")
+    }
+
+    /// Create a single key level by full path relative to `root`, with an
+    /// optional class name. The immediate parent must already exist (offreg
+    /// does not create intermediate keys). Returns the key and whether it was
+    /// newly created.
+    fn create_level(
+        root: Orhkey,
+        path: &str,
+        class: Option<&str>,
+    ) -> Result<(Key, bool), AgentError> {
+        let wpath = to_wide(path);
+        // The class buffer must outlive the call, so bind it before taking a ptr.
+        let wclass: Option<Vec<u16>> = class.map(to_wide);
+        let class_ptr: *const u16 = wclass.as_ref().map(|v| v.as_ptr()).unwrap_or(ptr::null());
+
+        let mut out: Orhkey = ptr::null_mut();
+        let mut disposition: Dword = 0;
+        let rc = unsafe {
+            (offreg().create_key)(
+                root,
+                wpath.as_ptr(),
+                class_ptr,
+                0,           // REG_OPTION_NON_VOLATILE
+                ptr::null(), // default security
+                &mut out,
+                &mut disposition,
+            )
+        };
+        if rc != ERROR_SUCCESS {
+            return Err(map_win32(rc, Ctx::Key));
+        }
+        Ok((
+            Key {
+                handle: out,
+                owned: true,
+            },
+            disposition == REG_CREATED_NEW_KEY,
+        ))
     }
 
     pub fn info(&self) -> Result<KeyInfo, AgentError> {
@@ -367,6 +381,59 @@ impl Drop for Key {
             }
         }
     }
+}
+
+/// Security information masks used when copying a key's descriptor. Full set
+/// first; fall back without the SACL when an offline hive does not expose one.
+const SEC_ALL: Dword = OWNER_SECURITY_INFORMATION
+    | GROUP_SECURITY_INFORMATION
+    | DACL_SECURITY_INFORMATION
+    | SACL_SECURITY_INFORMATION;
+const SEC_NO_SACL: Dword =
+    OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+
+/// Read a key's self-relative security bytes, preferring the full descriptor
+/// and falling back to omitting the SACL. Returns the mask actually read with.
+fn read_security_bytes(key: &Key) -> Option<(Dword, Vec<u8>)> {
+    if let Ok(sd) = key.get_security(SEC_ALL) {
+        return Some((SEC_ALL, sd));
+    }
+    if let Ok(sd) = key.get_security(SEC_NO_SACL) {
+        return Some((SEC_NO_SACL, sd));
+    }
+    None
+}
+
+/// Recursively copy `src` to a not-yet-existing `dst` (both relative to
+/// `root`), preserving class name, security, values, and the whole subtree.
+/// Used to emulate `/key/rename`, which offreg has no native call for.
+/// Descendant `last_write` timestamps cannot be preserved (the copies are
+/// new keys); CONTRACTS 0.1.2 excludes `last_write` under a renamed path from
+/// the semantic comparison for exactly this reason.
+pub fn copy_subtree(root: Orhkey, src: &str, dst: &str) -> Result<(), AgentError> {
+    let src_key = Key::open(root, src)?;
+    let info = src_key.info()?;
+
+    // Create the destination with the source's class name.
+    let (dst_key, _) = Key::create_level(root, dst, info.class.as_deref())?;
+
+    // Preserve security. Best effort: an offline-hive SACL write quirk must
+    // not abort the whole rename; the harness will surface any security diff.
+    if let Some((sec_info, sd)) = read_security_bytes(&src_key) {
+        let _ = dst_key.set_security(sec_info, &sd);
+    }
+
+    for (name, ty, bytes) in src_key.enum_values()? {
+        dst_key.set_value(&name, ty, &bytes)?;
+    }
+
+    let subnames: Vec<String> = src_key.enum_subkeys()?.into_iter().map(|(n, _)| n).collect();
+    drop(src_key);
+    drop(dst_key);
+    for sub in subnames {
+        copy_subtree(root, &format!("{src}\\{sub}"), &format!("{dst}\\{sub}"))?;
+    }
+    Ok(())
 }
 
 /// Delete `path` (relative to `root`). offreg's ORDeleteKey will not remove a

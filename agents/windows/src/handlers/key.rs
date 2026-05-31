@@ -5,7 +5,6 @@ use serde_json::{json, Value};
 use super::{get_hive, opt_bool, req_str};
 use crate::error::AgentError;
 use crate::offreg::key::{self, Key};
-use crate::offreg::Orhkey;
 use crate::time::filetime_to_iso8601;
 use crate::state::AppState;
 
@@ -40,7 +39,7 @@ pub fn delete(state: &AppState, body: &Value) -> Result<Value, AgentError> {
         let target = Key::open(hive.root(), &path)?;
         if target.info()?.subkey_count > 0 {
             return Err(AgentError::new(
-                "INTERNAL",
+                "KEY_HAS_CHILDREN",
                 format!("key has subkeys, pass recursive=true to delete: {path}"),
             ));
         }
@@ -52,9 +51,11 @@ pub fn delete(state: &AppState, body: &Value) -> Result<Value, AgentError> {
 /// POST /key/rename { handle, path, new_name } -> {}
 ///
 /// offreg has no native rename, so this is emulated: create the destination key
-/// under the same parent, deep-copy the subtree, then delete the source. This
-/// cannot preserve original last_write timestamps (the copies are new), which
-/// may diverge from libreg's native rename. Flagged as a spec item in STATE.md.
+/// under the same parent and deep-copy the subtree (class, security, values,
+/// and all descendants), then delete the source. Per CONTRACTS 0.1.2 this MUST
+/// preserve class/security/values/subtree; descendant `last_write` cannot be
+/// preserved by a copy, and the harness excludes `last_write` under a renamed
+/// path from semantic comparison for that reason.
 pub fn rename(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
     let hive = arc.lock().unwrap();
@@ -68,35 +69,16 @@ pub fn rename(state: &AppState, body: &Value) -> Result<Value, AgentError> {
         format!("{parent}\\{new_name}")
     };
 
-    let (_dst, created) = Key::create(hive.root(), &new_path)?;
-    if !created {
+    // Reject if the target already exists (offreg create would just open it).
+    if Key::open(hive.root(), &new_path).is_ok() {
         return Err(AgentError::new(
             "KEY_EXISTS",
             format!("rename target already exists: {new_path}"),
         ));
     }
-    copy_tree(hive.root(), &path, &new_path)?;
+    key::copy_subtree(hive.root(), &path, &new_path)?;
     key::delete_key(hive.root(), &path, true)?;
     Ok(json!({}))
-}
-
-/// Recursively copy values and subkeys from `src` to an already-created `dst`.
-fn copy_tree(root: Orhkey, src: &str, dst: &str) -> Result<(), AgentError> {
-    let src_key = Key::open(root, src)?;
-    let dst_key = Key::open(root, dst)?;
-    for (name, ty, bytes) in src_key.enum_values()? {
-        dst_key.set_value(&name, ty, &bytes)?;
-    }
-    let subnames: Vec<String> = src_key.enum_subkeys()?.into_iter().map(|(n, _)| n).collect();
-    drop(src_key);
-    drop(dst_key);
-    for subname in subnames {
-        let s = format!("{src}\\{subname}");
-        let d = format!("{dst}\\{subname}");
-        Key::create(root, &d)?;
-        copy_tree(root, &s, &d)?;
-    }
-    Ok(())
 }
 
 /// GET /key/list { handle, path } -> { subkeys: [...], values: [...] }
@@ -108,8 +90,9 @@ pub fn list(state: &AppState, body: &Value) -> Result<Value, AgentError> {
 
     let mut subkeys: Vec<String> = key.enum_subkeys()?.into_iter().map(|(n, _)| n).collect();
     let mut values: Vec<String> = key.enum_values()?.into_iter().map(|(n, _, _)| n).collect();
-    subkeys.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b)));
-    values.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b)));
+    // CONTRACTS 0.1.2: case-insensitive Unicode ordinal order, names uppercased.
+    subkeys.sort_by(|a, b| a.to_uppercase().cmp(&b.to_uppercase()));
+    values.sort_by(|a, b| a.to_uppercase().cmp(&b.to_uppercase()));
 
     Ok(json!({ "subkeys": subkeys, "values": values }))
 }

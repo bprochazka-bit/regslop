@@ -113,6 +113,7 @@ fn main() {
         // One thread per request. offreg calls are serialized per hive handle
         // by the registry, so different handles can be served concurrently.
         std::thread::spawn(move || {
+            let method = request.method().as_str().to_string();
             let path = request.url().split('?').next().unwrap_or("/").to_string();
 
             let mut raw = String::new();
@@ -133,7 +134,7 @@ fn main() {
                 }
             };
 
-            let resp = handlers::dispatch(&state, &path, &body);
+            let resp = handlers::dispatch(&state, &method, &path, &body);
             respond(request, &resp);
         });
     }

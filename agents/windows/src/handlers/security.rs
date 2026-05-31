@@ -1,11 +1,12 @@
 //! Security endpoint: GET and POST /key/security.
 //!
-//! The protocol uses the same path for read and write. We distinguish by
-//! presence of the `sddl` field in the request body (a write supplies it).
+//! The protocol uses the same path for read and write, distinguished by HTTP
+//! method (CONTRACTS 0.1.2): GET reads, POST writes (and requires `sddl`).
+//! Agents MUST NOT infer the operation from the `sddl` field's presence.
 
 use serde_json::{json, Value};
 
-use super::{get_hive, opt_str, req_str};
+use super::{get_hive, req_str};
 use crate::error::AgentError;
 use crate::offreg::key::Key;
 use crate::sddl::{sd_to_sddl, sddl_to_sd};
@@ -19,11 +20,14 @@ const SEC_ALL: Dword = OWNER_SECURITY_INFORMATION
 const SEC_NO_SACL: Dword =
     OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
 
-pub fn dispatch(state: &AppState, body: &Value) -> Result<Value, AgentError> {
-    if opt_str(body, "sddl").is_some() {
-        set(state, body)
-    } else {
-        get(state, body)
+pub fn dispatch(state: &AppState, method: &str, body: &Value) -> Result<Value, AgentError> {
+    match method {
+        "GET" => get(state, body),
+        "POST" => set(state, body),
+        other => Err(AgentError::new(
+            "INTERNAL",
+            format!("/key/security supports GET (read) and POST (write), not {other}"),
+        )),
     }
 }
 

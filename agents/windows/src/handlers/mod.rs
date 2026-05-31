@@ -18,8 +18,9 @@ use crate::response;
 use crate::state::AppState;
 
 /// Route a parsed request to its handler, wrap the result in the response
-/// envelope, and append an audit record.
-pub fn dispatch(state: &AppState, path: &str, body: &Value) -> Value {
+/// envelope, and append an audit record. `method` is the HTTP method, used to
+/// distinguish read vs write on `/key/security` (CONTRACTS 0.1.2).
+pub fn dispatch(state: &AppState, method: &str, path: &str, body: &Value) -> Value {
     let result: Result<Value, AgentError> = match path {
         "/version" => diagnostics::version(state),
         "/hive/create" => hive::create(state, body),
@@ -37,7 +38,7 @@ pub fn dispatch(state: &AppState, path: &str, body: &Value) -> Value {
         "/value/set" => value::set(state, body),
         "/value/get" => value::get(state, body),
         "/value/delete" => value::delete(state, body),
-        "/key/security" => security::dispatch(state, body),
+        "/key/security" => security::dispatch(state, method, body),
         other => Err(AgentError::new(
             "INTERNAL",
             format!("unknown endpoint {other}"),
