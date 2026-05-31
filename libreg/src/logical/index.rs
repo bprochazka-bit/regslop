@@ -16,67 +16,91 @@ use crate::format::li::IndexLeaf;
 use crate::format::nk::{KeyNode, OFFSET_NONE};
 use crate::format::ri::IndexRoot;
 use crate::format::FormatError;
-use core::cmp::Ordering;
 
-/// Maximum entries in a single lh leaf before a two-level ri index root is
-/// required. offreg caps a leaf at 507 entries, which is one hbin of cell
-/// space: (4096 - 32 header - 8 cell size field) / 8 bytes per entry = 507
-/// (tests/corpus/synthetic/ref_ri.hiv splits its leaves at 507, confirming
-/// the boundary that issue #34 / CONTRACTS 0.1.7 pin). The 508th subkey
-/// promotes the leaf to an ri index of lh leaves, which is step 8; until then
-/// we error rather than emit a leaf offreg would reject.
-const LH_MAX_ENTRIES: usize = 507;
+/// Maximum entries in a single lh leaf. offreg caps a leaf at 507 entries,
+/// which is one hbin of cell space: (4096 - 32 header - 8 cell size field) / 8
+/// bytes per entry = 507 (tests/corpus/synthetic/ref_ri.hiv splits its leaves
+/// at 507, the boundary issue #34 / CONTRACTS 0.1.7 pin). Beyond 507 the list
+/// is promoted to an `ri` index of lh leaves.
+const LH_LEAF_MAX: usize = 507;
 
 /// Insert the subkey at `child_off` (named `child_name`) into `parent`'s
-/// subkey list, keeping entries name-sorted. Updates `parent`'s
-/// `subkeys_list_offset` and `subkey_count` in place; the caller writes the
-/// parent nk back. The parent must not already contain a subkey of this
-/// name (the caller checks first).
+/// subkey list, keeping it name-sorted (invariant 17) and promoting to an
+/// `ri` index of lh leaves once it would exceed [`LH_LEAF_MAX`]. Updates
+/// `parent`'s `subkeys_list_offset` and `subkey_count` in place; the caller
+/// writes the parent nk back. The parent must not already contain a subkey of
+/// this name (the caller checks first).
+///
+/// The index is rebuilt from the full, freshly sorted entry set on each
+/// insert. This is simpler than incremental leaf splitting and, for keys added
+/// in sorted order, partitions the leaves exactly as offreg does (sequential
+/// fill, each leaf capped at 507; ref_ri.hiv's [507, 507, 86]). It is O(n) per
+/// insert; a future optimization could split incrementally. Allocation order
+/// is fixed (leaves in order, then the ri), so the output stays deterministic
+/// (Hard Rule 5).
 pub fn insert_subkey(
     image: &mut HiveImage,
     parent: &mut KeyNode,
     child_off: u32,
     child_name: &str,
 ) -> Result<(), LogicalError> {
-    let old_off = parent.subkeys_list_offset;
-    let mut leaf = if old_off == OFFSET_NONE {
-        HashLeaf::default()
-    } else {
-        HashLeaf::parse(image.content(old_off))?
-    };
+    // Gather the existing children plus the new one, sorted by name. The
+    // names come from the referenced nk cells (the leaves store hashes).
+    let mut entries = list_entries(image, parent)?;
+    entries.push((child_off, child_name.to_string()));
+    entries.sort_by(|a, b| key::cmp_name(&a.1, &b.1));
 
-    if leaf.entries.len() >= LH_MAX_ENTRIES {
-        return Err(LogicalError::Unsupported(
-            "subkey list exceeds lh capacity; ri promotion is step 8",
-        ));
+    // Release the old list structure (an lh leaf, or an ri and its leaves)
+    // before laying out the new one in the reclaimed space.
+    if parent.subkeys_list_offset != OFFSET_NONE {
+        free_subkey_list(image, parent.subkeys_list_offset)?;
     }
 
-    // Find the sorted insert position by comparing the new name against the
-    // existing children's names (the lh stores hashes, not names, so the
-    // names come from the referenced nk cells).
-    let mut pos = leaf.entries.len();
-    for (i, entry) in leaf.entries.iter().enumerate() {
-        let other = key::read_nk(image, entry.key_offset)?;
-        if key::cmp_name(child_name, &key::key_name_string(&other)) == Ordering::Less {
-            pos = i;
-            break;
+    parent.subkeys_list_offset = write_subkey_index(image, &entries);
+    parent.subkey_count = entries.len() as u32;
+    Ok(())
+}
+
+/// Write the subkey index for `entries` (already name-sorted) and return its
+/// offset: a single lh leaf when it fits, otherwise an ri of lh leaves each
+/// holding at most [`LH_LEAF_MAX`] entries in order.
+fn write_subkey_index(image: &mut HiveImage, entries: &[(u32, String)]) -> u32 {
+    if entries.len() <= LH_LEAF_MAX {
+        return write_lh_leaf(image, entries);
+    }
+    let leaf_offsets = entries
+        .chunks(LH_LEAF_MAX)
+        .map(|chunk| write_lh_leaf(image, chunk))
+        .collect();
+    let payload = IndexRoot { leaf_offsets }.to_payload();
+    let off = image.alloc(payload.len());
+    image.content_mut(off)[..payload.len()].copy_from_slice(&payload);
+    off
+}
+
+/// Allocate and write one lh leaf holding `entries`, returning its offset.
+fn write_lh_leaf(image: &mut HiveImage, entries: &[(u32, String)]) -> u32 {
+    let leaf = HashLeaf {
+        entries: entries
+            .iter()
+            .map(|(off, name)| HashLeafEntry::new(*off, name))
+            .collect(),
+    };
+    let payload = leaf.to_payload();
+    let off = image.alloc(payload.len());
+    image.content_mut(off)[..payload.len()].copy_from_slice(&payload);
+    off
+}
+
+/// Free a subkey list cell and, if it is an ri index, its leaf cells too.
+fn free_subkey_list(image: &mut HiveImage, list_offset: u32) -> Result<(), LogicalError> {
+    if signature_of(image.content(list_offset)) == Some(*b"ri") {
+        let ri = IndexRoot::parse(image.content(list_offset))?;
+        for leaf_off in ri.leaf_offsets {
+            image.free(leaf_off);
         }
     }
-    leaf.entries
-        .insert(pos, HashLeafEntry::new(child_off, child_name));
-
-    // Write the grown list to a fresh cell, then release the old one. Doing
-    // it in this order keeps the old contents readable until the new cell is
-    // fully written.
-    let payload = leaf.to_payload();
-    let new_off = image.alloc(payload.len());
-    image.content_mut(new_off)[..payload.len()].copy_from_slice(&payload);
-    if old_off != OFFSET_NONE {
-        image.free(old_off);
-    }
-
-    parent.subkeys_list_offset = new_off;
-    parent.subkey_count = leaf.entries.len() as u32;
+    image.free(list_offset);
     Ok(())
 }
 
