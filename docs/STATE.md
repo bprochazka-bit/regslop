@@ -1,11 +1,11 @@
 # Spec Agent STATE
 
-Last session: 2026-05-31 (wrap-up after the implementation agents conformed
-to 0.1.2 and went green against the live offreg VM).
+Last session: 2026-05-31 (resolved two inbound spec questions: default SDDL
+in 0.1.3, BAD_REQUEST in 0.1.4).
 
 ## CONTRACTS.md
 
-Current on main: **0.1.2** (all spec PRs merged). No bump this session.
+Current on main: **0.1.3**. 0.1.4 is in flight (PR #14, not yet merged).
 
 - 0.1.0: initial (merged).
 - 0.1.1 PATCH: invariant clarifications + the KEY_COMP_NAME typo fix
@@ -15,6 +15,12 @@ Current on main: **0.1.2** (all spec PRs merged). No bump this session.
   defines canonical SDDL normalization (see ADR 0003); specifies
   /key/rename subtree preservation and the harness last_write exclusion
   under a renamed path; sharpens the sort comparator.
+- 0.1.3 MINOR: ratifies the default security descriptor for a key created
+  without an explicit one (offreg-observed, asserted by `semantic`; issue
+  #11). Merged, PR #13.
+- 0.1.4 MINOR: adds error code BAD_REQUEST for a malformed request (vs
+  INTERNAL for an agent bug). PR #14, OPEN. Once merged, downstream agents
+  remap malformed requests off INTERNAL.
 
 ## Windows agent requests (resolved 2026-05-30, in 0.1.2)
 
@@ -62,45 +68,46 @@ The work the 0.1.2 decisions created for the owning agents has landed:
 - CONTRACTS 0.1.1 (PR #2) and 0.1.2 (PR #4); created the `contracts` and
   `spec` labels.
 - Issue #6: decision table answering the Windows agent, with downstream
-  work assigned per subtree. (All downstream PRs now merged; see above.)
+  work assigned per subtree. (All downstream PRs merged; issue #6 CLOSED.)
+- CONTRACTS 0.1.3 (PR #13, merged): ratified the default security
+  descriptor; closed issue #11.
+- CONTRACTS 0.1.4 (PR #14, OPEN): added the BAD_REQUEST error code.
 
-## Inbound spec questions from implementation agents (NEED A DECISION)
+## Inbound spec questions from implementation agents
 
-New since 0.1.2; raised in agents/linux/spec-questions.md and
-tests/harness/spec-questions.md. These are the spec agent's queue. None
-invent wire endpoints; each ships a provisional behavior so the harness
-stays green, but they want the contract pinned.
+Raised in agents/linux/spec-questions.md and tests/harness/spec-questions.md.
+None invent wire endpoints; each ships a provisional behavior so the harness
+stays green, but they want the contract pinned. Two resolved this session;
+three still need a decision.
 
-1. **Default security descriptor for a fresh key (issue #11, `contracts`).**
-   CONTRACTS.md does not specify the SDDL a newly created key inherits. The
-   first live differential run showed the old 2-ACE placeholder diverging
-   from offreg on every key. The Linux agent captured offreg's actual
-   default from the VM and set DEFAULT_SDDL to match:
-   `O:BAG:BAD:(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;WD)(A;CI;KR;;;RC)`
-   (SYSTEM full, Administrators full, Everyone read, Restricted Code read,
-   all container-inheritable). `semantic` is GREEN with it. ACTION: ratify
-   this (or a deliberately chosen default) in CONTRACTS.md as 0.1.3. This is
-   the highest-priority open item: a stand-in MemBackend default is in the
-   wire path with no contract behind it.
+RESOLVED this session:
 
-2. **BAD_REQUEST error code (linux Q2).** No code for a malformed request
-   (missing field / bad JSON); the agent uses INTERNAL provisionally. A
-   dedicated code would let the harness tell caller bugs from agent bugs.
-   ACTION: decide add-code (MINOR) vs keep-INTERNAL; record either way.
+- **Default security descriptor for a fresh key (issue #11).** Ratified the
+  offreg-observed default
+  `O:BAG:BAD:(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;WD)(A;CI;KR;;;RC)` in
+  CONTRACTS 0.1.3 (PR #13, merged); asserted by `semantic`. Issue #11 closed.
+  Downstream still owed: the real libreg backend must emit it (the Linux
+  agent hardcodes it as a stand-in).
+- **BAD_REQUEST error code (linux Q2).** Added in 0.1.4 (PR #14, OPEN):
+  malformed request (bad JSON, missing/wrong-typed field, unknown constant)
+  returns BAD_REQUEST; INTERNAL is reserved for agent bugs on a well-formed
+  request. Downstream once merged: both agents remap off INTERNAL.
 
-3. **/key/create intermediate-key semantics (linux Q3).** Linux ships
+STILL NEED A DECISION (the queue):
+
+1. **/key/create intermediate-key semantics (linux Q3).** Linux ships
    RegCreateKeyEx semantics (create all intermediate keys; KEY_EXISTS only
    when the final component exists). offreg ORCreateKey may create a single
    key requiring parents. Live differ is green so far, but the contract is
    silent. ACTION: state the intended semantics in CONTRACTS.md.
 
-4. **GET-with-JSON-body transport (linux Q5).** Reads are GET with a JSON
+2. **GET-with-JSON-body transport (linux Q5).** Reads are GET with a JSON
    body; the agent routes on path and accepts a body on any method, and the
    harness sends GET bodies via a low-level builder. ACTION: confirm this
    transport is intended, or move read params to the query string. Likely
    just a confirmation + a sentence in the HTTP ADR.
 
-5. **Recovery-tag control surface (harness Q2).** CONTRACTS.md mentions "a
+3. **Recovery-tag control surface (harness Q2).** CONTRACTS.md mentions "a
    separate test mode that simulates crashes" but defines no control
    surface for aborting mid-save deterministically. The recovery tag is
    blocked until this is specified. ACTION: spec the crash-injection hook
@@ -149,7 +156,7 @@ Resolved/non-action (recorded so they are not re-litigated):
   (PR #5).
 - 0004 dual transaction logs design rationale (why two logs, recovery
   ordering) + the crash-injection control surface for the recovery tag
-  (inbound question 5). Still pending; write alongside resolving the
+  (inbound queue 3). Still pending; write alongside resolving the
   minor-version open question.
 
 ## Environment notes (for the next session)
@@ -169,18 +176,21 @@ Resolved/non-action (recorded so they are not re-litigated):
 
 ## What I would do next
 
-- Ratify the default SDDL (issue #11) in a 0.1.3 CONTRACTS PR, labeled
-  `contracts`, on its own (rule 1: no contract change bundled with anything
-  else). Decide between offreg's captured default and a deliberately chosen
-  one, then have the Linux and library agents conform. Highest priority.
-- In the same or a sibling contracts pass, decide BAD_REQUEST (inbound 2),
-  pin /key/create intermediate-key semantics (inbound 3), and confirm the
-  GET-body transport in the HTTP ADR (inbound 4).
+- Land 0.1.4 / BAD_REQUEST (PR #14, currently OPEN), then watch for the
+  agents' follow-ups remapping malformed requests off INTERNAL.
+- Pin /key/create intermediate-key semantics (inbound queue 1): confirm
+  whether the contract is RegCreateKeyEx-style (create intermediates) or
+  offreg ORCreateKey-style (single key, parents required). Needs a read of
+  what offreg actually does on the VM; likely a short clarification PATCH.
+- Confirm the GET-with-JSON-body transport (inbound queue 2) with a sentence
+  in the HTTP ADR (0001); probably no wire change.
 - Draft ADR 0004 (dual transaction logs) covering the recovery-tag
-  crash-injection control surface (inbound 5) alongside open question 2.
+  crash-injection control surface (inbound queue 3) alongside open
+  question 2.
 - Resolve my open questions 1 (invariant 11 split point) and 2 (dual-log
   minor version) once a corpus hive or the live VM can dump the relevant
   structures; fold answers into hive-format.md and a follow-up PATCH.
 - Decide open question 3 (class_name) once offreg is seen reporting a
   nonnull class on a corpus hive.
-- Close issue #6 (all downstream PRs merged).
+- Downstream owed: the real libreg backend must emit the ratified default
+  SDDL (0.1.3); the Linux agent hardcodes it as a stand-in today.
