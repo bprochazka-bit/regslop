@@ -30,7 +30,7 @@ these invent wire endpoints or error codes beyond CONTRACTS.md.
    container-inheritable). With that, `semantic` is GREEN against the VM. Please
    ratify this as the canonical default in CONTRACTS.md (or specify the intended
    one). This is a stand-in MemBackend default; the real libreg backend must
-   produce the same descriptor.
+   produce the same descriptor. Tracking: issue #11 (`spec`, `contracts`).
 
 5. **GET requests with JSON bodies.**
    CONTRACTS.md specifies GET for reads with a JSON body. The agent routes on
