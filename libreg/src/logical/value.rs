@@ -174,11 +174,12 @@ fn write_payload_inplace(image: &mut HiveImage, off: u32, payload: &[u8]) {
     image.content_mut(off)[..payload.len()].copy_from_slice(payload);
 }
 
-/// Encode a value name: ASCII (Latin-1) with VALUE_COMP_NAME when every
-/// character is ASCII, otherwise UTF-16LE. The default value is name "".
+/// Encode a value name: Latin-1 with VALUE_COMP_NAME when every character is
+/// at most U+00FF, otherwise UTF-16LE (same threshold as key names). The
+/// default value is name "".
 fn encode_value_name(name: &str) -> (u16, Vec<u8>) {
-    if name.is_ascii() {
-        (VALUE_COMP_NAME, name.as_bytes().to_vec())
+    if name.chars().all(|c| (c as u32) <= 0xFF) {
+        (VALUE_COMP_NAME, name.chars().map(|c| c as u8).collect())
     } else {
         let mut bytes = Vec::with_capacity(name.len() * 2);
         for unit in name.encode_utf16() {

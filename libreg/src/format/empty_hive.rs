@@ -6,7 +6,8 @@
 //!
 //! ```text
 //!   0x000  hbin header (32 bytes), declared offset 0, size 4096
-//!   0x020  root nk cell  (KEY_HIVE_ENTRY | KEY_NO_DELETE | KEY_COMP_NAME)
+//!   0x020  root nk cell  (KEY_COMP_NAME; offreg saves the root with no
+//!                         KEY_HIVE_ENTRY/KEY_NO_DELETE, see nk::new_root)
 //!   0x078  sk cell       (lone ring, refcount 1, default descriptor)
 //!   ...    one free cell filling the rest of the bin
 //! ```
@@ -16,17 +17,18 @@
 //! (Layer 1) and logical layer exist, hive creation moves up and this
 //! becomes a reference/bootstrap.
 //!
-//! NOTE: the acceptance test for step 3 is "the Windows agent loads it via
-//! offreg without error", which this crate cannot run on its own. The
-//! offreg-specific choices here (root key name "ROOT", the default
-//! security descriptor, version 1.5, zeroed file name) are best-effort
-//! and not yet confirmed against offreg. See libreg/STATE.md.
+//! NOTE: the offreg reference hives in tests/corpus/synthetic now confirm
+//! the choices here: root key name "ROOT", format version 1.5, and the root
+//! security descriptor (byte-identical to the ratified default key
+//! descriptor). The empty-hive layout (root nk at 0x20, sk at 0x78, free at
+//! 0x120) matches ref_one_ascii.hiv exactly. See libreg/STATE.md.
 
 use super::base_block::{BaseBlock, BASE_BLOCK_SIZE};
 use super::cell::{cell_size_for, encode_cell};
 use super::hbin::{HBIN_ALIGN, HBIN_HEADER_SIZE, HBIN_SIGNATURE};
 use super::nk::KeyNode;
-use super::sk::{default_security_descriptor, SecurityCell};
+use super::security_descriptor::default_key_security_descriptor_bytes;
+use super::sk::SecurityCell;
 
 /// Options for [`build_empty_hive`].
 pub struct EmptyHiveOptions {
@@ -46,7 +48,13 @@ impl Default for EmptyHiveOptions {
             // (Hard Rule 5). Callers that want "now" pass it explicitly.
             // 0x01dc... is an arbitrary valid FILETIME in the 2020s.
             last_written: 0x01dc_0000_0000_0000,
-            security_descriptor: default_security_descriptor(),
+            // offreg gives a freshly created hive's root the same descriptor
+            // it gives every created key (the ratified default, issue #11):
+            // confirmed byte-identical against the offreg reference hives in
+            // tests/corpus/synthetic (ref_one_ascii.hiv root sk). This
+            // replaces the earlier NULL-DACL placeholder; spec question 2
+            // (root SD) is thereby answered.
+            security_descriptor: default_key_security_descriptor_bytes(),
         }
     }
 }
@@ -109,7 +117,7 @@ mod tests {
     use crate::format::base_block::BaseBlock;
     use crate::format::cell::Cell;
     use crate::format::hbin::{walk, HiveBins};
-    use crate::format::nk::{KeyNode, KEY_COMP_NAME, KEY_HIVE_ENTRY, KEY_NO_DELETE};
+    use crate::format::nk::{KeyNode, KEY_COMP_NAME};
     use crate::format::sk::SecurityCell;
 
     fn build() -> Vec<u8> {
@@ -149,7 +157,8 @@ mod tests {
         let root_cell = Cell::parse_at(data, bb.root_cell_offset as usize).expect("root cell");
         assert!(root_cell.allocated);
         let root = KeyNode::parse(root_cell.data).expect("root nk");
-        assert_eq!(root.flags, KEY_HIVE_ENTRY | KEY_NO_DELETE | KEY_COMP_NAME);
+        // offreg saves a standalone root with KEY_COMP_NAME only.
+        assert_eq!(root.flags, KEY_COMP_NAME);
         assert_eq!(root.name, b"ROOT");
         assert_eq!(root.subkey_count, 0);
         assert_eq!(root.value_count, 0);

@@ -211,9 +211,15 @@ impl KeyNode {
 
     /// Build a root key node with an ASCII name and the given security
     /// cell offset and timestamp. All link fields start empty.
+    ///
+    /// Flags are KEY_COMP_NAME only. Suhanov's spec shows KEY_HIVE_ENTRY |
+    /// KEY_NO_DELETE on a root, but the offreg reference hives in
+    /// tests/corpus/synthetic show a saved standalone hive's root carrying
+    /// just KEY_COMP_NAME (0x20); the kernel sets KEY_HIVE_ENTRY when it
+    /// mounts a hive, not at save time. Hard Rule 4: match offreg, not docs.
     pub fn new_root(name: &str, security_offset: u32, last_written: u64) -> KeyNode {
         KeyNode {
-            flags: KEY_HIVE_ENTRY | KEY_NO_DELETE | KEY_COMP_NAME,
+            flags: KEY_COMP_NAME,
             last_written,
             access_bits: 0,
             parent: OFFSET_NONE,
@@ -249,7 +255,8 @@ mod tests {
         assert_eq!(parsed, root);
         assert_eq!(parsed.name, b"ROOT");
         assert!(parsed.name_is_ascii());
-        assert_eq!(parsed.flags, KEY_HIVE_ENTRY | KEY_NO_DELETE | KEY_COMP_NAME);
+        // offreg saves a standalone root with KEY_COMP_NAME only (see new_root).
+        assert_eq!(parsed.flags, KEY_COMP_NAME);
         assert_eq!(parsed.security_offset, 0x78);
         assert_eq!(parsed.subkey_count, 0);
         assert_eq!(parsed.value_count, 0);
