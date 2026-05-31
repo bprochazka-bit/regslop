@@ -86,12 +86,13 @@ fn read_sddl(key: &Key) -> Result<String, AgentError> {
     sd_to_sddl(&sd, SEC_NO_SACL)
 }
 
-/// Compare two `{ "name": ... }` objects case-insensitively (Windows key-name
-/// semantics), tie-breaking on the original casing for determinism.
+/// Compare two `{ "name": ... }` objects by the CONTRACTS 0.1.2 canonical
+/// comparator: case-insensitive Unicode ordinal, names uppercased (Windows
+/// semantics). Both agents must use this exact comparator or semantic diffs
+/// fire on ordering alone. Sibling names are case-insensitive-unique in a
+/// valid hive, so no casing tiebreak is reachable.
 fn cmp_by_name(a: &Value, b: &Value) -> std::cmp::Ordering {
     let an = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    an.to_lowercase()
-        .cmp(&bn.to_lowercase())
-        .then_with(|| an.cmp(bn))
+    an.to_uppercase().cmp(&bn.to_uppercase())
 }

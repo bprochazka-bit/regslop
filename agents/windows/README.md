@@ -64,7 +64,8 @@ carry a stable `code`. Implemented:
 - `POST /key/create` `/key/delete` `/key/rename`
 - `GET  /key/list` `/key/info`
 - `POST /value/set` `/value/delete`, `GET /value/get`
-- `GET/POST /key/security` (write when the body carries `sddl`, else read)
+- `GET /key/security` reads, `POST /key/security` writes (requires `sddl`);
+  read vs write is by HTTP method, per CONTRACTS 0.1.2
 
 ## Notes
 
