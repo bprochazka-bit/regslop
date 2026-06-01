@@ -7,6 +7,7 @@
 
 pub mod base_block;
 pub mod cell;
+pub mod db;
 pub mod empty_hive;
 pub mod hbin;
 pub mod lf;
