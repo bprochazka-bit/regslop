@@ -2,21 +2,27 @@
 
 Last updated: 2026-05-31 (library agent)
 
-Merge state: steps 1-6 plus the offreg-alignment pass are on main (allocator
-#27, key create #33, value set #37, offreg-align #41, step 6 read #44, all
-MERGED). THIS session (branch `agent/library-ri-promote` off main) implements
-step 8: ri promotion on WRITE, so libreg can create keys with more than 507
-subkeys. This unblocks harness issue #40 (un-skip invariant 11). PR -> main.
+Merge state: steps 1-6 and 8 plus the offreg-alignment pass are on main
+(allocator #27, key create #33, value set #37, offreg-align #41, step 6 read
+#44, step 8 ri-promote #45, all MERGED). THIS session (branch
+`agent/library-delete-keys` off main) implements step 7: key/value DELETE with
+cell reclamation. With this, create/delete round-trips and the library covers
+the core mutation surface (create/set/delete for keys and values).
 
-STEP 8 (this session): `logical::index::insert_subkey` now rebuilds the
-subkey index from the full sorted entry set on each insert, emitting a single
-lh leaf for <= 507 entries and an `ri` of lh leaves (each <= 507, in order)
-beyond that. For keys added in sorted order this partitions leaves exactly as
-offreg does. `tests/promote_ri.rs`: 507 keys stay one lh leaf; 508 promote to
-ri [507, 1]; 1100 produce ri [507, 507, 86] matching ref_ri.hiv (same leaf
-sizes AND same enumerated subkeys), and the result walks/reloads cleanly;
-creation is byte-deterministic. The read path (step 6) reads it all back.
-Step 6 just merged (#44); both the read and write sides of wide keys now work.
+STEP 7 (this session): delete frees cells and decrements the shared sk.
+- `Hive::delete_value(path, name)` frees the vk and its out-of-line data cell,
+  rebuilds the value list (dropping it when empty). Returns whether it existed.
+- `Hive::delete_key(path, recursive)` detaches the key from its parent
+  (`index::remove_subkey` rebuilds the parent list, demoting ri->lh->none as
+  the count falls), then `free_subtree` frees the key and all descendants
+  post-order: subkey lists (and ri leaves), value lists + vks + data cells,
+  the nk, and one sk reference via `security::release_sk` (decrement; unlink +
+  free at 0). Non-recursive delete of a key with subkeys returns
+  `LogicalError::HasSubkeys`; the root key cannot be deleted.
+- Verified: after deleting all keys/values the allocated-cell count returns to
+  the empty hive's (root nk + root sk), the shared sk refcount drops back to
+  1, walk stays green, and delete is byte-deterministic. Delete-then-recreate
+  reuses the reclaimed space. New tests live in `src/logical/mod.rs`.
 
 PERF/NOTE: the rebuild is O(n) per insert (O(n^2) to build n subkeys),
 because each insert re-reads every sibling's name (leaves store hashes, not
@@ -117,16 +123,19 @@ subkey enumeration.
   ordering (`cmp_name` / `name_eq`, ASCII upcasing).
 - `logical/index.rs`: `insert_subkey` keeps the subkey list name-sorted
   (invariant 17) and promotes lh -> ri of lh leaves past 507 (step 8, rebuilds
-  the index each insert). `list_entries` reads `(offset, name)` per subkey
-  across all forms (lf/lh/li/ri).
-- `logical/security.rs`: `add_sk` allocates a new sk with the ratified
-  default descriptor and splices it into the root's sk ring, refcount 1.
+  the index each insert); `remove_subkey` rebuilds it without a child (demoting
+  ri->lh->none). `list_entries` reads `(offset, name)` per subkey across all
+  forms (lf/lh/li/ri). `free_subkey_list` frees a list and its ri leaves.
+- `logical/security.rs`: `ensure_sk` shares a descriptor-equal sk (bumping its
+  refcount) or allocates+links a new one; `release_sk` decrements on delete
+  and unlinks+frees at 0.
 
-Security note: each created key gets its OWN sk (the ratified created-key
-default), distinct from the empty-hive root's placeholder SD, so a single
-key create yields a 2+ element sk ring. sk dedup/sharing (one sk, summed
-refcount) is step 10. The root SD remains the open step-3 placeholder
-(spec question 2); this session does not touch it.
+Security note (CORRECTED by the offreg references): offreg gives the root and
+all created keys the SAME ratified default descriptor, shared via ONE sk whose
+refcount equals the key count (ref_multi.hiv: 7 for root + 6). The empty-hive
+root carries that descriptor too (not a placeholder). spec question 2 is
+answered; sk sharing (step 10 create-side) and refcount release (step 7) are
+both implemented.
 
 ## Layer 1: the allocator (prior session)
 
@@ -276,8 +285,8 @@ a Layer 2 (logical) concern. These are pure parsers/serializers, fully
 verifiable offline; they do NOT yet decide which list type a create emits
 (that is the step 4 logical decision, harness-gated).
 
-Tests (all 88 lib + 2 base/hbin corpus + 4 offreg-compare + 1 vk/value
-corpus green, `cargo test`, clippy clean; new files
+Tests (all 106 lib + corpus/integration green: base/hbin, offreg-compare,
+enumerate, promote-ri; `cargo test`, clippy clean; new files
 fmt clean. NOTE: pre-existing fmt drift exists in several `format/*.rs` and
 `tests/hbin_walk_corpus.rs` from earlier merges; left untouched per the
 "fmt what you touch" convention, so a repo-wide `cargo fmt --check` still
@@ -376,6 +385,13 @@ every `format/*.rs`; pass only the files you changed, or revert the rest.):
   `promotes_to_ri_at_508` ([507, 1]), `wide_key_matches_ref_ri` (1100 keys ->
   ri [507, 507, 86], walks + reloads, same subkeys as ref_ri.hiv), and
   `promotion_is_deterministic`.
+- `src/logical/mod.rs` (delete, step 7): `delete_value_removes_just_that_value`,
+  `delete_last_value_drops_the_list` (vk + data + list reclaimed),
+  `delete_leaf_key_reclaims_to_empty` (allocated count back to root nk + sk),
+  `delete_nonempty_key_requires_recursive`,
+  `recursive_delete_removes_the_whole_subtree`, `cannot_delete_root`,
+  `delete_decrements_shared_sk_refcount`, `delete_then_recreate`, and
+  `delete_is_byte_deterministic`.
 
 ## Step 3/4/5 verification against offreg references (this session)
 
@@ -423,14 +439,14 @@ now strong (byte-identical empty-hive prefix and descriptor, matching tree).
   leaves; verified against ref_ri.hiv. Because it rebuilds via `list_entries`
   (which reads any form), inserting into a LOADED li/ri/lf hive now works too
   (it comes back out as lh/ri). Only lf/li are never WRITTEN (offreg uses lh).
-- sk dedup/sharing (the create-side of step 10) DONE:
-  `security::ensure_sk` reuses a descriptor-equal sk and bumps its refcount,
-  matching offreg (ref_multi.hiv: refcount 7 for 6 children). NOT done: the
-  refcount DECREMENT and orphan-free on key delete (pairs with step 7).
-- No key/value deletion yet (step 7); the allocator's `free`/coalesce is ready
-  for it, but no logical delete path frees an nk/list/sk subtree or decrements
-  an sk refcount. This is the main remaining gap before the library is
-  round-trip complete for create/delete workloads.
+- sk dedup/sharing (create-side of step 10) and refcount DECREMENT (step 7)
+  BOTH DONE: `security::ensure_sk` shares + bumps on create (ref_multi.hiv:
+  refcount 7 for 6 children); `security::release_sk` decrements on delete and
+  unlinks + frees the cell at 0 (the root's shared sk never reaches 0).
+- Step 7 (key/value delete + free list) DONE this session. create/delete now
+  round-trips: deleting everything returns the allocated-cell count to the
+  empty hive's. No orphan cells (verified by allocated-count + walk; a full
+  reachability audit is not run, but the post-order free leaves none).
 - db format module (step 9) not written; values over 16344 bytes return
   Unsupported. All other cell types (nk/vk/sk/lf/lh/li/ri) exist.
 - Allocator is a content-agnostic substrate only: it does not update nk
@@ -501,15 +517,11 @@ now strong (byte-identical empty-hive prefix and descriptor, matching tree).
    on wiring `Hive` into `agents/linux` (their subtree). The offline evidence
    is now strong (byte-identical empty-hive prefix + descriptor, matching
    tree vs the offreg references), so this should pass.
-2. Steps 6 (read) and 8 (ri promotion on write) DONE; tell the harness
-   (issue #40) it can un-skip invariant 11 now that libreg writes wide keys.
-3. Step 7 (key/value delete + free list) is the main remaining gap: a logical
-   delete that frees the nk, its subkey/value lists (and ri leaves), the
-   value-data cells, and DECREMENTS the shared sk refcount (freeing the sk at
-   0). The allocator's free/coalesce is ready; this makes create/delete
-   round-trip. Test: create then delete; resulting hive has no orphan cells
-   and validates (walk green, no dangling offsets).
-4. Bytewise parity polish (lower priority, all bytewise-only): match offreg's
+2. Steps 6/7/8 DONE; the core mutation surface (create/set/delete for keys
+   and values) is complete. Remaining numbered steps: 9 (db big-data cells
+   for values over 16344 bytes) and 11 (transaction logs / dual-log recovery).
+   Step 9 is self-contained Layer 0 + a value.rs branch; a good next pick.
+3. Bytewise parity polish (lower priority, all bytewise-only): match offreg's
    allocation order (lh before child nk), the non-ASCII lh hash (full Unicode
    upcase, issue #22). The `dump_hive`/`make_key_hive` examples make this easy
    to check against the references.

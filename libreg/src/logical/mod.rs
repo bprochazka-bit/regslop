@@ -20,6 +20,7 @@ pub mod value;
 use crate::alloc::HiveImage;
 use crate::format::base_block::{BaseBlock, BASE_BLOCK_SIZE};
 use crate::format::empty_hive::{build_empty_hive, EmptyHiveOptions};
+use crate::format::nk::OFFSET_NONE;
 use crate::format::security_descriptor::default_key_security_descriptor_bytes;
 use crate::format::FormatError;
 
@@ -32,6 +33,9 @@ pub enum LogicalError {
     Unsupported(&'static str),
     /// A path component named a key that does not exist.
     NotFound,
+    /// A non-recursive delete was asked to remove a key that still has
+    /// subkeys.
+    HasSubkeys,
 }
 
 impl From<FormatError> for LogicalError {
@@ -46,6 +50,7 @@ impl core::fmt::Display for LogicalError {
             LogicalError::Format(e) => write!(f, "format error: {e}"),
             LogicalError::Unsupported(what) => write!(f, "unsupported: {what}"),
             LogicalError::NotFound => write!(f, "key not found"),
+            LogicalError::HasSubkeys => write!(f, "key has subkeys (use recursive delete)"),
         }
     }
 }
@@ -142,6 +147,37 @@ impl Hive {
         value::list_names(&self.image, off)
     }
 
+    /// Delete the value `name` from the key at `path`, returning whether it
+    /// existed. Frees the value's cells.
+    pub fn delete_value(&mut self, path: &str, name: &str) -> Result<bool, LogicalError> {
+        let off = self.resolve(path)?.ok_or(LogicalError::NotFound)?;
+        value::delete(&mut self.image, off, name)
+    }
+
+    /// Delete the key at `path`, detaching it from its parent and freeing its
+    /// nk, subkey/value lists, value data, and its share of its sk. With
+    /// `recursive` false, a key that still has subkeys is rejected
+    /// ([`LogicalError::HasSubkeys`]); with it true, the whole subtree goes.
+    /// The root key cannot be deleted.
+    pub fn delete_key(&mut self, path: &str, recursive: bool) -> Result<(), LogicalError> {
+        let key_off = self.resolve(path)?.ok_or(LogicalError::NotFound)?;
+        if key_off == self.root_offset {
+            return Err(LogicalError::Unsupported("cannot delete the root key"));
+        }
+        let nk = key::read_nk(&self.image, key_off)?;
+        if nk.subkey_count > 0 && !recursive {
+            return Err(LogicalError::HasSubkeys);
+        }
+
+        // Detach from the parent first, while this key's nk is still valid for
+        // the name lookup the rebuild needs; then free the subtree.
+        let mut parent = key::read_nk(&self.image, nk.parent)?;
+        index::remove_subkey(&mut self.image, &mut parent, key_off)?;
+        key::write_nk_inplace(&mut self.image, nk.parent, &parent);
+        free_subtree(&mut self.image, key_off)?;
+        Ok(())
+    }
+
     /// The raw self-relative security descriptor bytes of the key at `path`.
     /// The agent converts these to/from SDDL on the wire (CONTRACTS Security).
     pub fn key_security(&self, path: &str) -> Result<Vec<u8>, LogicalError> {
@@ -218,13 +254,31 @@ fn components(path: &str) -> impl Iterator<Item = &str> {
     path.split('\\').filter(|s| !s.is_empty())
 }
 
+/// Free a key and its entire subtree: every descendant key, their subkey and
+/// value lists (and ri leaves), value data cells, sk references, and nk cells.
+/// Does NOT detach `key_off` from its parent (the caller does that first, while
+/// the nk is still valid for its name). Post-order, so a cell is freed only
+/// after everything reachable through it.
+fn free_subtree(image: &mut HiveImage, key_off: u32) -> Result<(), LogicalError> {
+    let nk = key::read_nk(image, key_off)?;
+    for (child_off, _) in index::list_entries(image, &nk)? {
+        free_subtree(image, child_off)?;
+    }
+    if nk.subkeys_list_offset != OFFSET_NONE {
+        index::free_subkey_list(image, nk.subkeys_list_offset)?;
+    }
+    value::free_all(image, &nk)?;
+    security::release_sk(image, nk.security_offset)?;
+    image.free(key_off);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::format::base_block::BaseBlock;
     use crate::format::hbin::walk;
     use crate::format::lh::{name_hash, HashLeaf};
-    use crate::format::nk::OFFSET_NONE;
     use crate::format::sk::SecurityCell;
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -576,5 +630,145 @@ mod tests {
             hive.to_file()
         }
         assert_eq!(build(), build(), "Hard Rule 5: reproducible bytes");
+    }
+
+    /// Allocated-cell count of a hive's bins, used to check delete reclaims.
+    fn allocated_cells(hive: &Hive) -> usize {
+        walk(hive.image().bins()).expect("walk").allocated_cells
+    }
+
+    fn root_sk_refcount(hive: &Hive) -> u32 {
+        let root = key::read_nk(hive.image(), hive.root_offset()).unwrap();
+        SecurityCell::parse(hive.image().content(root.security_offset))
+            .unwrap()
+            .refcount
+    }
+
+    #[test]
+    fn delete_value_removes_just_that_value() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+        hive.set_value("K", "a", REG_DWORD, &1u32.to_le_bytes())
+            .unwrap();
+        hive.set_value("K", "b", REG_SZ, b"x\0").unwrap();
+
+        assert!(hive.delete_value("K", "a").unwrap(), "existed");
+        assert_eq!(hive.values("K").unwrap(), vec!["b"]);
+        assert_eq!(hive.get_value("K", "a").unwrap(), None);
+        assert!(!hive.delete_value("K", "a").unwrap(), "already gone");
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn delete_last_value_drops_the_list() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+        // An out-of-line value: deleting it must free both the vk and the data
+        // cell, returning the allocation count to the pre-set value.
+        let before = allocated_cells(&hive);
+        hive.set_value("K", "big", REG_BINARY, &[7u8; 64]).unwrap();
+        hive.delete_value("K", "big").unwrap();
+        assert_eq!(hive.values("K").unwrap(), Vec::<String>::new());
+        assert_eq!(allocated_cells(&hive), before, "vk + data + list reclaimed");
+        let nk = key::read_nk(hive.image(), hive.resolve("K").unwrap().unwrap()).unwrap();
+        assert_eq!(nk.values_list_offset, OFFSET_NONE);
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn delete_leaf_key_reclaims_to_empty() {
+        let mut hive = Hive::new_empty();
+        let empty_alloc = allocated_cells(&hive); // root nk + root sk
+        hive.create_key("Software").unwrap();
+        hive.delete_key("Software", false).unwrap();
+
+        assert_eq!(hive.subkeys("").unwrap(), Vec::<String>::new());
+        let root = key::read_nk(hive.image(), hive.root_offset()).unwrap();
+        assert_eq!(root.subkey_count, 0);
+        assert_eq!(root.subkeys_list_offset, OFFSET_NONE);
+        assert_eq!(
+            allocated_cells(&hive),
+            empty_alloc,
+            "child nk + lh reclaimed"
+        );
+        assert_eq!(root_sk_refcount(&hive), 1, "shared sk back to root only");
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn delete_nonempty_key_requires_recursive() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("A\\B").unwrap();
+        assert_eq!(hive.delete_key("A", false), Err(LogicalError::HasSubkeys));
+        // Nothing changed.
+        assert_eq!(hive.subkeys("").unwrap(), vec!["A"]);
+        assert_eq!(hive.subkeys("A").unwrap(), vec!["B"]);
+    }
+
+    #[test]
+    fn recursive_delete_removes_the_whole_subtree() {
+        let mut hive = Hive::new_empty();
+        let empty_alloc = allocated_cells(&hive);
+        hive.create_key("A\\B\\C").unwrap();
+        hive.create_key("A\\D").unwrap();
+        hive.set_value("A\\B\\C", "v", REG_DWORD, &9u32.to_le_bytes())
+            .unwrap();
+
+        hive.delete_key("A", true).unwrap();
+        assert_eq!(hive.resolve("A").unwrap(), None);
+        assert_eq!(hive.subkeys("").unwrap(), Vec::<String>::new());
+        assert_eq!(
+            allocated_cells(&hive),
+            empty_alloc,
+            "entire subtree reclaimed"
+        );
+        assert_eq!(root_sk_refcount(&hive), 1);
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn cannot_delete_root() {
+        let mut hive = Hive::new_empty();
+        assert!(matches!(
+            hive.delete_key("", false),
+            Err(LogicalError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn delete_decrements_shared_sk_refcount() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("A").unwrap();
+        hive.create_key("B").unwrap();
+        assert_eq!(root_sk_refcount(&hive), 3, "root + A + B");
+        hive.delete_key("A", false).unwrap();
+        assert_eq!(root_sk_refcount(&hive), 2);
+        hive.delete_key("B", false).unwrap();
+        assert_eq!(root_sk_refcount(&hive), 1);
+    }
+
+    #[test]
+    fn delete_then_recreate() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("X\\Y").unwrap();
+        hive.delete_key("X", true).unwrap();
+        // Re-creating the same path works after the cells were reclaimed.
+        let off = hive.create_key("X\\Y").unwrap();
+        assert_eq!(hive.resolve("X\\Y").unwrap(), Some(off));
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn delete_is_byte_deterministic() {
+        fn build() -> Vec<u8> {
+            let mut hive = Hive::new_empty();
+            for k in ["a", "b", "c", "d"] {
+                hive.create_key(k).unwrap();
+            }
+            hive.delete_key("b", false).unwrap();
+            hive.delete_key("d", false).unwrap();
+            hive.to_file()
+        }
+        assert_eq!(build(), build(), "Hard Rule 5 across deletes");
     }
 }

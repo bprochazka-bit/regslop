@@ -48,6 +48,34 @@ pub fn ensure_sk(
     add_sk(image, ring_member, descriptor)
 }
 
+/// Drop one reference to the sk at `sk_off`. While other keys still reference
+/// it, this just decrements the refcount; when the count would reach 0 the
+/// cell is unlinked from its ring and freed. The root's shared sk never
+/// reaches 0 (the root always references it), so deleting created keys only
+/// decrements it.
+pub(super) fn release_sk(image: &mut HiveImage, sk_off: u32) -> Result<(), FormatError> {
+    let mut sk = read_sk(image, sk_off)?;
+    if sk.refcount > 1 {
+        sk.refcount -= 1;
+        write_sk(image, sk_off, &sk);
+        return Ok(());
+    }
+
+    // Last reference: unlink from the ring (when it has other members) and
+    // free the cell.
+    let (prev, next) = (sk.blink, sk.flink);
+    if prev != sk_off {
+        let mut p = read_sk(image, prev)?;
+        p.flink = next;
+        write_sk(image, prev, &p);
+        let mut n = read_sk(image, next)?;
+        n.blink = prev;
+        write_sk(image, next, &n);
+    }
+    image.free(sk_off);
+    Ok(())
+}
+
 /// Allocate a new sk cell carrying `descriptor` and splice it into the ring
 /// immediately after `anchor_off`, returning its offset. Refcount starts at 1.
 fn add_sk(image: &mut HiveImage, anchor_off: u32, descriptor: Vec<u8>) -> Result<u32, FormatError> {
