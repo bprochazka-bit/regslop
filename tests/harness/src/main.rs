@@ -256,13 +256,14 @@ fn main() -> ExitCode {
         }
     }
 
-    if args.windows_smb {
-        let n: usize = results
-            .iter()
-            .filter_map(|r| r.windows.as_ref())
-            .map(|w| w.byte_invariants.len())
-            .sum();
-        eprintln!("SMB byte-pull: ran byte-level structural checks on {n} Windows hive(s)");
+    // Report how many saved hives got their on-disk bytes byte-validated on
+    // each side (Linux reads local files, Windows pulls over SMB; only real
+    // regf files are checked, so a MemBackend run shows 0).
+    let lin_bytes: usize = results.iter().map(|r| r.linux.byte_invariants.len()).sum();
+    let win_bytes: usize =
+        results.iter().filter_map(|r| r.windows.as_ref()).map(|w| w.byte_invariants.len()).sum();
+    if lin_bytes + win_bytes > 0 {
+        eprintln!("Byte-level structural checks ran on {lin_bytes} Linux and {win_bytes} Windows hive(s)");
     }
 
     let now = util::now_unix();

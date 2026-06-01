@@ -2,6 +2,23 @@
 
 Last updated: 2026-05-31
 
+## Linux-side byte-level structural checks (latest session)
+
+Extended the byte-pull so the harness validates the **Linux agent's** on-disk
+hive bytes too, not just the Windows side. The Linux agent runs on this box, so
+the harness reads its saved hive file directly (no SMB) and runs
+`structural::check_bytes` on it. A `regf` magic guard means only a real hive is
+checked: the `MemBackend` writes a JSON envelope (skipped, not failed), while
+`--backend libreg` emits real regf and gets validated. The SMB (Windows) and
+local (Linux) paths are now one block in `run_sequence`; `main` reports how many
+hives each side byte-checked.
+
+Verified with `--backend libreg` vs offreg on the VM: byte-level checks ran on
+**11 Linux hives, all PASS** (invariants 1 to 6, 9, 10, 11, 13, 14, 16 on
+libreg's own regf writer), structural 9/9. This validates libreg's regf output
+structurally in the differential, beyond the dump-based 17/18. `--standin` is
+unaffected (MemBackend envelopes skipped).
+
 ## SMB byte-pull: structural checks on offreg's live output (latest session)
 
 `--windows-smb` extends the byte-level structural invariants from the static

@@ -329,23 +329,37 @@ fn run_sequence(client: &Client, test: &TestDef) -> SeqResult {
         }
     }
 
-    // SMB byte-pull: for the Windows agent (offreg), pull each saved hive off
-    // the VM and run the byte-level structural invariants on it. A pull failure
-    // is a warning, never a test failure (the VM may be down).
+    // Byte-level structural validation of each saved hive's on-disk bytes. The
+    // Windows agent is remote, so pull over SMB; the Linux agent runs on this
+    // box, so read its file directly. Either way, only a real `regf` file is
+    // checked: the MemBackend writes a JSON envelope, not regf, so it is skipped
+    // (not failed), while a LibregBackend (--backend libreg) emits real regf and
+    // gets validated. A failed fetch is a warning, never a test failure.
     let mut byte_invariants = HashMap::new();
-    if let Some(host) = client.smb_host() {
-        for var in &saved {
-            let Some(path) = paths.get(var) else { continue };
-            let base = path.rsplit(['\\', '/']).next().unwrap_or(path);
-            let local = std::env::temp_dir().join(format!("harness-smb-{base}"));
-            match crate::smb::pull(host, base, &local) {
-                Ok(()) => {
-                    if let Ok(bytes) = std::fs::read(&local) {
-                        byte_invariants.insert(var.clone(), structural::check_bytes(&bytes));
+    for var in &saved {
+        let Some(path) = paths.get(var) else { continue };
+        let bytes = match client.smb_host() {
+            Some(host) => {
+                let base = path.rsplit(['\\', '/']).next().unwrap_or(path);
+                let local = std::env::temp_dir().join(format!("harness-smb-{base}"));
+                match crate::smb::pull(host, base, &local) {
+                    Ok(()) => {
+                        let b = std::fs::read(&local).ok();
+                        let _ = std::fs::remove_file(&local);
+                        b
                     }
-                    let _ = std::fs::remove_file(&local);
+                    Err(e) => {
+                        eprintln!("warning: SMB pull of {base} for byte checks failed: {e}");
+                        None
+                    }
                 }
-                Err(e) => eprintln!("warning: SMB pull of {base} for byte checks failed: {e}"),
+            }
+            // Local agent (Linux): the saved hive is a file on this box.
+            None => std::fs::read(path).ok(),
+        };
+        if let Some(bytes) = bytes {
+            if bytes.starts_with(b"regf") {
+                byte_invariants.insert(var.clone(), structural::check_bytes(&bytes));
             }
         }
     }
