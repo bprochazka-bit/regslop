@@ -2,6 +2,18 @@
 
 Last updated: 2026-06-01
 
+## Wide-key ri promotion test (issue #40)
+
+`tests/wide_key.yaml` creates 1100 subkeys under one key, forcing ri promotion
+(an ri index root over lh leaves capped at 507, matching ref_ri.hiv:
+[507, 507, 86]). Generated (3315 lines). libreg shipped step-8 ri promotion, so
+this validates the 507 figure end-to-end against offreg, not just from the
+static fixture: with `--windows-smb`, inv11 (byte-level) runs on both libreg's
+and offreg's saved regf and confirms the ri/lh structure on each. Result:
+semantic + structural PASS on both sides (17/17, 10/10). Closes the wide-key
+half of issue #40; the inv11 "un-skip" half was already done in check_bytes
+(#39/#54).
+
 ## Coverage: big-data values and malformed requests (latest session)
 
 Two new test definitions, both green libreg-vs-offreg:
