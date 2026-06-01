@@ -138,6 +138,11 @@ subkey enumeration.
 - `logical/security.rs`: `ensure_sk` shares a descriptor-equal sk (bumping its
   refcount) or allocates+links a new one; `release_sk` decrements on delete
   and unlinks+frees at 0.
+- `Hive::set_key_security(path, descriptor)` (branch `agent/library-set-security`,
+  resolves issue #52): repoints a key at the sk for a new descriptor
+  (`ensure_sk`) and releases its old sk (`release_sk`); setting the same
+  descriptor is a no-op. Unblocks the agents' POST /key/security + SDDL
+  round-trip. The getter `key_security` already existed.
 
 Security note (CORRECTED by the offreg references): offreg gives the root and
 all created keys the SAME ratified default descriptor, shared via ONE sk whose

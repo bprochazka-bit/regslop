@@ -188,6 +188,34 @@ impl Hive {
         Ok(sk.descriptor)
     }
 
+    /// Set the security descriptor of the key at `path` to `descriptor` (raw
+    /// self-relative bytes; the agent converts from SDDL). The key is pointed
+    /// at the sk that carries this descriptor, sharing an existing one (with a
+    /// refcount bump) or allocating a new sk, and its previous sk reference is
+    /// released (freed when it drops to zero). Setting the descriptor a key
+    /// already has is a no-op.
+    pub fn set_key_security(
+        &mut self,
+        path: &str,
+        descriptor: Vec<u8>,
+    ) -> Result<(), LogicalError> {
+        let off = self.resolve(path)?.ok_or(LogicalError::NotFound)?;
+        let mut nk = key::read_nk(&self.image, off)?;
+        let old_sk = nk.security_offset;
+
+        // The root's sk is always a live ring member to search from / link to.
+        let anchor = key::read_nk(&self.image, self.root_offset)?.security_offset;
+        let new_sk = security::ensure_sk(&mut self.image, anchor, descriptor)?;
+        if new_sk != old_sk {
+            nk.security_offset = new_sk;
+            key::write_nk_inplace(&mut self.image, off, &nk);
+        }
+        // Drop the key's old reference. When the descriptor was unchanged this
+        // exactly undoes the bump ensure_sk just made (a clean no-op).
+        security::release_sk(&mut self.image, old_sk)?;
+        Ok(())
+    }
+
     /// Offset of the key at `path`, or `None` if any component is missing.
     pub fn resolve(&self, path: &str) -> Result<Option<u32>, LogicalError> {
         let mut current = self.root_offset;
@@ -884,5 +912,80 @@ mod tests {
         hive.set_value("K", "v", REG_BINARY, &blob(40_000)).unwrap();
         assert_eq!(hive.get_value("K", "v").unwrap().unwrap().1, blob(40_000));
         assert_loadable(&hive);
+    }
+
+    /// The sk descriptor a key currently points at.
+    fn sk_descriptor(hive: &Hive, path: &str) -> Vec<u8> {
+        hive.key_security(path).unwrap()
+    }
+
+    fn sk_offset(hive: &Hive, path: &str) -> u32 {
+        let off = hive.resolve(path).unwrap().unwrap();
+        key::read_nk(hive.image(), off).unwrap().security_offset
+    }
+
+    #[test]
+    fn set_key_security_changes_the_descriptor() {
+        // A descriptor distinct from the ratified default the root carries.
+        let custom = crate::format::sk::default_security_descriptor();
+        let mut hive = Hive::new_empty();
+        hive.create_key("A").unwrap();
+        assert_eq!(root_sk_refcount(&hive), 2, "root + A share the default sk");
+
+        hive.set_key_security("A", custom.clone()).unwrap();
+        assert_eq!(sk_descriptor(&hive, "A"), custom);
+        // A moved to its own sk; the shared default is back to just the root.
+        assert_ne!(
+            sk_offset(&hive, "A"),
+            sk_offset(&hive, ""),
+            "A no longer shares root sk"
+        );
+        assert_eq!(root_sk_refcount(&hive), 1);
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn setting_the_same_descriptor_is_a_noop() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("A").unwrap();
+        let before_off = sk_offset(&hive, "A");
+        let before_rc = root_sk_refcount(&hive);
+
+        hive.set_key_security("A", default_key_security_descriptor_bytes())
+            .unwrap();
+        assert_eq!(sk_offset(&hive, "A"), before_off, "still the shared sk");
+        assert_eq!(root_sk_refcount(&hive), before_rc, "refcount unchanged");
+    }
+
+    #[test]
+    fn keys_with_the_same_new_descriptor_share_one_sk() {
+        let custom = crate::format::sk::default_security_descriptor();
+        let mut hive = Hive::new_empty();
+        hive.create_key("A").unwrap();
+        hive.create_key("B").unwrap();
+        hive.set_key_security("A", custom.clone()).unwrap();
+        hive.set_key_security("B", custom.clone()).unwrap();
+
+        assert_eq!(sk_offset(&hive, "A"), sk_offset(&hive, "B"), "shared sk");
+        assert_eq!(sk_descriptor(&hive, "A"), custom);
+        assert_eq!(sk_descriptor(&hive, "B"), custom);
+        // The shared custom sk has refcount 2; the root's default is back to 1.
+        let custom_rc = SecurityCell::parse(hive.image().content(sk_offset(&hive, "A")))
+            .unwrap()
+            .refcount;
+        assert_eq!(custom_rc, 2);
+        assert_eq!(root_sk_refcount(&hive), 1);
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn set_security_survives_save_and_reload() {
+        let custom = crate::format::sk::default_security_descriptor();
+        let mut hive = Hive::new_empty();
+        hive.create_key("A").unwrap();
+        hive.set_key_security("A", custom.clone()).unwrap();
+
+        let reloaded = Hive::from_file_bytes(&hive.to_file()).unwrap();
+        assert_eq!(reloaded.key_security("A").unwrap(), custom);
     }
 }
