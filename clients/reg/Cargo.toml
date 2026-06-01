@@ -1,0 +1,13 @@
+[package]
+name = "reg"
+version = "0.1.0"
+edition = "2021"
+description = "reg.exe-compatible registry CLI for offline hives"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "reg"
+path = "src/main.rs"
+
+[dependencies]
+cli-core = { path = "../cli-core" }

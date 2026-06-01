@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["cli-core", "reg", "sc", "regedit"]
+
+# The client utilities are deliberately dependency-free beyond libreg itself.
+# No registry cache is available in the build environment, and the project is
+# Debian-first (native binaries, no containers), so we hand-roll the small
+# amount of JSON and HTTP that regedit needs rather than pull external crates.
+
+[profile.release]
+opt-level = 2
