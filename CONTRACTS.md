@@ -4,7 +4,7 @@ This file is the single source of truth for interfaces between components.
 All agents read this file. Only the spec agent writes to it.
 Changes require a PR labeled `contracts` and a version bump.
 
-**Current version: 0.1.7**
+**Current version: 0.1.8**
 
 ## Versioning
 
@@ -137,7 +137,16 @@ Value types use Windows constants by name:
 | REG_QWORD        | integer (sent as string if > 2^53)   |
 | REG_RESOURCE_LIST etc. | base64 string (treat as opaque)|
 
-Default value is name `""` (empty string), not `"(Default)"`.
+Default value is name `""` (empty string), not `"(Default)"`. Some Windows
+APIs surface the default value's name as the display string `"(Default)"`;
+an agent that sees that form MUST normalize it to `""` when producing the
+canonical JSON, so both sides agree on the empty name.
+
+A `REG_NONE` value carries no meaningful data: its canonical `data` MUST be
+`null` on read regardless of any bytes stored on disk (offreg returns a
+zero-length payload; libreg and any other backend drop the bytes to `null`
+in the canonical form). The on-disk bytes, if any, are a bytewise concern,
+not semantic.
 
 ### Security
 
@@ -328,6 +337,11 @@ is distinct from `TYPE_MISMATCH`: the latter applies when a well-formed
 
 ## Change Log
 
+- 0.1.8 (patch): clarify two value-read canonicalizations surfaced by the
+  first libreg-backed differential (PR #49). REG_NONE canonical data is
+  always null on read, whatever bytes are stored. An agent that sees the
+  default value's name as "(Default)" MUST normalize it to "". Both are
+  agent-side canonical-form rules; no wire change.
 - 0.1.7 (patch): correct invariant 11's subkey-list promotion threshold from
   the approximate "1015" to 507, the per-leaf cap offreg actually uses
   (verified against tests/corpus/synthetic/ref_ri.hiv: 1100 subkeys form an
