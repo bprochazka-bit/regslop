@@ -49,6 +49,8 @@ struct Args {
     client_tests_dir: Option<PathBuf>,
     /// Path to the `reg` binary for client-differential mode.
     reg_bin: Option<PathBuf>,
+    /// Path to the `sc` binary for client-differential mode.
+    sc_bin: Option<PathBuf>,
     /// Directory of recovery test YAMLs. When set, the harness drives the
     /// crash-injection hook against the libreg agent and reports a `recovery`
     /// pass rate.
@@ -72,6 +74,7 @@ impl Default for Args {
             windows_smb: false,
             client_tests_dir: None,
             reg_bin: None,
+            sc_bin: None,
             recovery_tests_dir: None,
         }
     }
@@ -102,6 +105,7 @@ fn parse_args() -> Args {
             "--windows-smb" => a.windows_smb = true,
             "--client-tests-dir" => a.client_tests_dir = Some(PathBuf::from(next())),
             "--reg-bin" => a.reg_bin = Some(PathBuf::from(next())),
+            "--sc-bin" => a.sc_bin = Some(PathBuf::from(next())),
             "--recovery-tests-dir" => a.recovery_tests_dir = Some(PathBuf::from(next())),
             "-h" | "--help" => {
                 println!(
@@ -175,14 +179,14 @@ fn run_client_differential(agent: &Client, args: &Args, dir: &PathBuf) -> ExitCo
         Some(h) => split_host_port(h, 0).0,
         None => fatal("client-differential mode needs --windows-host (the VM)"),
     };
-    let reg_bin = args
-        .reg_bin
-        .clone()
-        .unwrap_or_else(|| fatal("client-differential mode needs --reg-bin <path to our reg>"));
+    if args.reg_bin.is_none() && args.sc_bin.is_none() {
+        fatal("client-differential mode needs --reg-bin and/or --sc-bin");
+    }
     let _lock = winvm_lock::WinVmLock::acquire(&args.lock_path).unwrap_or_else(|e| fatal(e));
-    eprintln!("Client-differential: {} vs reg.exe on {vm_host}", reg_bin.display());
+    eprintln!("Client-differential vs reg.exe/sc.exe on {vm_host}");
 
-    let results = client_differ::run(agent, &vm_host, &reg_bin, dir);
+    let results =
+        client_differ::run(agent, &vm_host, args.reg_bin.as_deref(), args.sc_bin.as_deref(), dir);
     let total = results.len();
     let passed = results.iter().filter(|r| r.passed).count();
     eprintln!();

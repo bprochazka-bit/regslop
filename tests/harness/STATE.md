@@ -26,6 +26,26 @@ Depends on the agent PR (`/test/crash_save` + log-backed save/load); built and
 verified together. Once both land, the spec agent can add `/test/crash_save` to
 CONTRACTS (MINOR, Linux-only) per ADR 0004.
 
+## Client-differential phase 2: sc (issue #68)
+
+`sc.exe` only talks to the live SCM (it cannot target a loaded hive like
+`reg add`), so the sc flow differs: our `sc` writes the offline SYSTEM hive
+(`--hive FILE --controlset 1`), while on the VM `sc.exe` creates/configs the
+*live* service, the harness `reg save`s the `HKLM\SYSTEM\CurrentControlSet\
+Services\<name>` subtree, pulls it, and `sc delete`s the live service. The
+comparison extracts our `ControlSet001\Services\<name>` node and compares it to
+the reg-saved root as service views (top-level name elided; security/timestamps
+ignored).
+
+- `client_differ.rs` gained a `kind: sc` test path; `ClientTest` gained `kind`
+  and `service`. The runner now takes `--reg-bin` and/or `--sc-bin`.
+- `tests/client/sc.yaml`: 3 cases (create own, create share+auto, create+config).
+  Full client differential is **11/11 green** vs the VM (8 reg + 3 sc).
+
+Finding filed for the clients agent: a bare `sc create` defaults `ObjectName` to
+`LocalSystem` in sc.exe but our `sc` omits it; the cases set `obj= LocalSystem`
+explicitly to stay green until that is resolved.
+
 ## Client-differential mode, phase 1 (issue #68)
 
 Validates the `reg`/`sc` CLIs the way libreg is validated: run the same command
