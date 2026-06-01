@@ -10,8 +10,8 @@
 //! What works: key create/delete (single keys and full paths, recursive
 //! delete), case-insensitive lookup, subkey enumeration across all list forms
 //! with lh->ri promotion, value set/get/delete (inline, plain, and big-data db
-//! cells), and descriptor-shared sk cells with refcounting. Transaction logs
-//! (step 11) are the main piece not yet implemented.
+//! cells), and descriptor-shared sk cells with refcounting. Crash recovery
+//! (step 11) builds on this layer in [`crate::log`].
 
 pub mod index;
 pub mod key;
@@ -63,6 +63,10 @@ pub struct Hive {
     image: HiveImage,
     root_offset: u32,
     last_written: u64,
+    /// The committed sequence number (generation) of the loaded hive. A save
+    /// produces the next generation; recovery selects the highest one across
+    /// the primary and the logs (see [`crate::log`]).
+    generation: u32,
 }
 
 impl Hive {
@@ -93,6 +97,8 @@ impl Hive {
             image: HiveImage::from_bins(bins),
             root_offset: bb.root_cell_offset,
             last_written: bb.last_written,
+            // A clean hive's committed generation is its secondary sequence.
+            generation: bb.secondary_seq,
         };
         // The root offset must frame a real nk, or every later operation that
         // dereferences it would fault. Cell::parse_at is bounds-safe.
@@ -103,6 +109,27 @@ impl Hive {
     /// Serialize the hive back to a complete file (base block + bins).
     pub fn to_file(&self) -> Vec<u8> {
         self.image.to_hive_file(self.root_offset, self.last_written)
+    }
+
+    /// The committed sequence number (generation) of this hive.
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// A complete hive file for this in-memory state stamped at sequence
+    /// `generation` (a clean snapshot: primary == secondary == generation,
+    /// checksum recomputed). Used for both the committed primary and the log
+    /// journal of a recoverable save (see [`crate::log`]).
+    pub fn snapshot(&self, generation: u32) -> Vec<u8> {
+        let mut bb = BaseBlock::create(self.root_offset, self.image.bins_size(), self.last_written);
+        bb.primary_seq = generation;
+        bb.secondary_seq = generation;
+        bb.recompute_checksum();
+
+        let mut file = Vec::with_capacity(BASE_BLOCK_SIZE + self.image.bins().len());
+        file.extend_from_slice(&bb.to_bytes());
+        file.extend_from_slice(self.image.bins());
+        file
     }
 
     /// Check the root offset frames a valid nk. Uses the bounds-safe cell

@@ -2,10 +2,35 @@
 
 Last updated: 2026-05-31 (library agent)
 
-Merge state: steps 1-10 plus the offreg-alignment pass and security get/set
-are on main (allocator #27, key create #33, value set #37, offreg-align #41,
-step 6 read #44, step 8 ri-promote #45, step 7 delete #47, step 9 big-data
-#53, set_key_security #57, all MERGED). The core mutation surface is complete.
+Merge state: steps 1-10 + offreg-alignment + security get/set + load
+robustness + panic-safety are on main, and the harness reports libreg-vs-offreg
+GREEN (16/16 semantic, 9/9 structural, 8/8 roundtrip). The ONLY remaining
+differential axis is `recovery` (step 11), which is libreg-internal (offreg
+writes no logs) and was made the library agent's gating item in issue #61.
+
+THIS session (branch `agent/library-recovery` off main): STEP 11, the dual-log
+crash-recovery PROTOTYPE (`src/log/`, Layer 3), answering issue #61.
+- Scheme: a save is a *generation*, a full self-consistent hive snapshot
+  (`Hive::snapshot(gen)`, valid checksum) stamped with a sequence number. A
+  save journals the new generation to the alternating log slot, then commits
+  the primary. `recover(primary, log1, log2)` picks the highest valid
+  generation; a torn (bad-checksum) log is ignored, so a clean (log, primary)
+  pair always survives (the point of dual logs, ADR 0004 part A).
+- API: `Hive::generation()`, `Hive::snapshot(gen)`; `log::{Slot, CrashPoint,
+  log_slot_for, crash_save_plan, recover}`. `crash_save_plan(hive, point)`
+  returns the ordered `(Slot, bytes)` writes a recoverable save performs,
+  truncated at the crash point, for the agent's `/test/crash_save` to execute.
+- Tests (src/log/mod.rs): the full issue-#61 recovery sequence for all three
+  crash points recovers baseline+M; generation selection (newer log wins); a
+  torn log falls back to the clean primary; alternating slots; empty-input
+  error. An in-memory `Disk` stand-in mirrors the harness's file writes.
+- CAVEAT / for issue #61: this is a FULL-SNAPSHOT journal, so the two
+  pre-primary points (after_first_log, after_log_before_primary) recover
+  identically; the distinction only matters to a dirty-page delta scheme (a
+  future optimization that does not change the recovery contract). Posted the
+  prototype contract on issue #61 for the spec/harness/linux agents.
+
+----- panic-safety + load robustness (now merged) and earlier below -----
 
 THIS session (branch `agent/library-content-safety` off main): completed the
 PANIC-SAFETY work begun in #59. Every operation on a loaded hive now returns
