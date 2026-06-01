@@ -1,12 +1,24 @@
 # ADR 0004: Dual transaction logs and the recovery-test control surface
 
-- Status: proposed
+- Status: accepted (the `/test/crash_save` hook shipped and the `recovery`
+  tag is live; endpoint added to CONTRACTS in 0.1.8)
 - Date: 2026-05-31
 - Deciders: spec agent
 - Scope: CONTRACTS.md "Transaction Log Behavior" and the `recovery` test
   category; prompted by the harness agent's spec question 2
   (tests/harness/spec-questions.md). The control surface in part B is a
-  proposal and is NOT yet in CONTRACTS.md (see Consequences).
+  confirmed design but is NOT yet in CONTRACTS.md (see Consequences).
+
+## Revision note (issue #61)
+
+The harness agent (issue #61) asked four questions to lock the `/test/crash_save`
+contract before the library agent builds it. They are answered in
+"Part B.2: answers to the harness, confirmed" below. In short: the request/response shape
+stands as written; the three crash points and their on-disk postconditions are
+confirmed; `crash_save` writes to the hive's bound path so a later
+`/hive/load` of that path works; and an invalid `point` is a `BAD_REQUEST`
+(no new error code). Everything in this ADR remains a design: nothing enters
+CONTRACTS until the prototype exists.
 
 ## Context
 
@@ -54,7 +66,7 @@ every instant there is at least one intact (log, primary) pair to recover
 from. This is the reason Windows 8.1 moved to dual logging, and it is the
 behavior v0.1 targets.
 
-### Part B: recovery-test control surface (proposed)
+### Part B.1: recovery-test control surface (rationale)
 
 Recovery is tested on the libreg side only. The oracle for a recovery test
 is the pre-crash canonical dump of the same hive, captured with a normal
@@ -94,6 +106,68 @@ to the log/primary boundary and is non-deterministic about how far the save
 got, so it cannot distinguish a complete pre-primary flush from a partial
 log write.
 
+### Part B.2: answers to the harness, confirmed (issue #61)
+
+These confirm/refine the proposal so the library agent can build the hook in
+one pass. They describe the intended contract; they are still a design until
+the prototype lands.
+
+**1. Request/response shape: confirmed as written.**
+
+```
+POST /test/crash_save  { "handle", "point" }
+     point in { "after_log_before_primary", "after_first_log", "after_primary" }
+-> { "ok": true, "data": { "crashed_at": "<point>" }}
+```
+
+`crashed_at` echoes the point actually honored. Linux/libreg only; the
+Windows agent need not route it (the harness will not call it there). If the
+harness ever does call it on a non-libreg agent, the standard "unknown
+endpoint" path applies (`BAD_REQUEST`, per the agents' existing routing).
+
+**2. The three crash points and their on-disk postconditions: confirmed.**
+
+The save sequence is: journal M's dirty pages to the active log, fsync the
+log, then write and fsync the primary (sequence numbers bumped). The points
+cut that sequence:
+
+- `after_log_before_primary`: M's dirty pages are in the active log and
+  fsynced; the primary is NOT updated, so on disk `primary != secondary`
+  sequence (dirty). On the next `hive_load`, the loader detects the dirty
+  hive, replays the log, and the recovered dump is `baseline + M`. Core test.
+- `after_first_log`: only the older-generation log has been written; the
+  other log still holds the previous generation; the primary is not
+  committed. Exercises log-generation selection on load. Recovered dump is
+  still `baseline + M`. (For a hive with a single dirty generation this may
+  be observationally identical to `after_log_before_primary`; the library
+  agent decides whether the two points differ for a given mutation, and may
+  treat them the same when only one log is in play. The harness treats a
+  point it cannot distinguish as a pass, not a failure.)
+- `after_primary`: M is fully committed (primary written, sequences equal,
+  clean hive). Reload needs no recovery; the dump is `baseline + M`. Control
+  / no-op case.
+
+In all three, the call writes to the hive's bound path P and its `.LOG1`/
+`.LOG2` siblings (see answer 3), so a subsequent `hive_load P` against a
+fresh handle observes exactly what was left on disk.
+
+**3. Path: `crash_save` writes to the hive's already-bound path.**
+
+The handle was opened by `hive_create`/`hive_load` with a path; like
+`/hive/save`, `crash_save` targets that same path (and its `.LOG1`/`.LOG2`).
+No path is passed in or returned. The harness closes the handle after the
+call and reloads by path, so the handle may be consumed/invalidated by
+`crash_save`; agents need not keep it valid.
+
+**4. Invalid `point`: `BAD_REQUEST` (no new error code).**
+
+An unrecognized `point` is a malformed request, exactly what `BAD_REQUEST`
+(CONTRACTS 0.1.4) already covers ("an unknown constant"). No new code is
+warranted. The harness treats any `ok:false` envelope as "skip this recovery
+case" rather than a crash, so `BAD_REQUEST` for an unsupported point is also
+the graceful-degradation path on an agent that has not implemented every
+point yet.
+
 ## Alternatives considered
 
 ### Single log (minor version 3) as the recovery target
@@ -119,16 +193,23 @@ crash points prove too coarse.
 
 - This ADR does NOT add `/test/crash_save` to CONTRACTS.md. The spec agent
   does not add endpoints without an implementation behind them (docs/CLAUDE.md).
-  The endpoint enters CONTRACTS as a MINOR (test-mode, Linux only, Windows
-  `not_supported`) once the library agent has a working log-recovery path and
-  a prototype of the hook, and the harness confirms it can drive `recovery`
-  green.
+  The shape, crash points, path behavior, and error code are now confirmed
+  (Part B answers), so the library agent can build the hook to spec; the
+  endpoint enters CONTRACTS as a MINOR (test-mode, Linux only, Windows
+  `not_supported`) once that prototype exists and the harness confirms it can
+  drive `recovery` green.
 - Until then the `recovery` tag stays n/a, which the harness already reports.
-- Open question, unresolved: the exact on-disk minor version libreg writes
-  for dual logs (5 vs 6; CONTRACTS loosely says "v1.5 hives"). hive-format.md
-  leans 6. Do not pin it in CONTRACTS until a corpus hive or the live VM
-  confirms what libreg actually writes. When resolved, reconcile the
-  CONTRACTS "Transaction Log Behavior" wording in the same PATCH.
+  Everything else is green (issue #61: libreg-vs-offreg 16/16 semantic, 9/9
+  structural, 8/8 roundtrip), so `recovery` is the last open differential
+  axis.
+- The invalid-`point` error code is settled as `BAD_REQUEST` (existing,
+  0.1.4); the eventual CONTRACTS MINOR adds the endpoint, not a new code.
+- The dual-log minor-version question is RESOLVED (CONTRACTS 0.1.7 work):
+  offreg writes minor version 5 for a fresh create, and minor 6 is the
+  live-kernel dual-log variant offreg does not produce (hive-format.md
+  Versions). Recovery is a libreg-internal property, so libreg's own
+  log-bearing hives may carry whichever minor version its writer uses; this
+  is not gated on offreg and does not block the recovery tag.
 
 ## Downstream (owning agents)
 

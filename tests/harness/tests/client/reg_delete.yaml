@@ -1,0 +1,17 @@
+name: delete_value
+ops:
+  - add Software\App /v Keep /t REG_SZ /d keep /f
+  - add Software\App /v Gone /t REG_SZ /d gone /f
+  - delete Software\App /v Gone /f
+---
+name: delete_key_recursive
+ops:
+  - add Software\Tree\A\B /v X /t REG_DWORD /d 1 /f
+  - add Software\Tree\C /v Y /t REG_DWORD /d 2 /f
+  - delete Software\Tree\A /f
+---
+name: delete_all_values
+ops:
+  - add Software\App /v One /t REG_DWORD /d 1 /f
+  - add Software\App /v Two /t REG_DWORD /d 2 /f
+  - delete Software\App /va /f

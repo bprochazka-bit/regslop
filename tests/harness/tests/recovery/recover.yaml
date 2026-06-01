@@ -1,0 +1,72 @@
+# Recovery tests (ADR 0004 / issue #61). Ops build and commit a baseline
+# (through the last hive_save); ops after it are the uncommitted mutation M
+# that recovery must restore from the log on the next load. The runner crashes
+# at `point` instead of saving, then reloads and asserts baseline+M came back.
+name: recover_after_log_before_primary
+point: after_log_before_primary
+operations:
+  - op: hive_create
+    path: /tmp/libreg_rec_a.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: Software\App
+  - op: value_set
+    handle: $h
+    key: Software\App
+    name: Base
+    type: REG_SZ
+    data: baseline
+  - op: hive_save
+    handle: $h
+  - op: value_set
+    handle: $h
+    key: Software\App
+    name: Extra
+    type: REG_DWORD
+    data: 42
+---
+name: recover_after_first_log
+point: after_first_log
+operations:
+  - op: hive_create
+    path: /tmp/libreg_rec_b.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: Data\K1
+  - op: hive_save
+    handle: $h
+  - op: key_create
+    handle: $h
+    path: Data\K2
+  - op: value_set
+    handle: $h
+    key: Data\K2
+    name: V
+    type: REG_QWORD
+    data: 4294967296
+---
+name: recover_after_primary_is_clean
+point: after_primary
+operations:
+  - op: hive_create
+    path: /tmp/libreg_rec_c.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: A\B\C
+  - op: value_set
+    handle: $h
+    key: A\B\C
+    name: Leaf
+    type: REG_SZ
+    data: committed
+  - op: hive_save
+    handle: $h
+  - op: value_set
+    handle: $h
+    key: A\B\C
+    name: After
+    type: REG_MULTI_SZ
+    data: ["x", "y"]

@@ -4,7 +4,7 @@ This file is the single source of truth for interfaces between components.
 All agents read this file. Only the spec agent writes to it.
 Changes require a PR labeled `contracts` and a version bump.
 
-**Current version: 0.1.7**
+**Current version: 0.1.8**
 
 ## Versioning
 
@@ -194,6 +194,41 @@ GET /hive/validate  { "handle" }
 
 The canonical JSON form is defined below and is what semantic diffs compare.
 
+### Test-mode endpoints
+
+These exist only to drive the `recovery` tag and are not part of the
+production protocol. The Linux/libreg agent implements them; the Windows
+(offreg) agent does not (offreg writes no logs, so it has nothing to
+recover). The harness calls them only against the Linux agent. See ADR 0004
+for the rationale.
+
+```
+POST /test/crash_save  { "handle", "point" }
+     point in { "after_log_before_primary", "after_first_log", "after_primary" }
+                    -> { "data": { "bytes_written": int,
+                                   "crashed_at": "<point>" }}
+```
+
+`crash_save` performs a recoverable save truncated at `point`, writing to the
+hive's already-bound path (and its `.LOG1`/`.LOG2` siblings), then stops,
+leaving the on-disk primary and logs mid-save so the next `/hive/load` of
+that path exercises recovery. `crashed_at` echoes the honored point. The
+crash points:
+
+- `after_log_before_primary`: dirty pages are journaled and fsynced; the
+  primary is not committed (`primary != secondary` sequence). The next load
+  detects the dirty hive, replays the log, and recovers `baseline + M`.
+- `after_first_log`: only the older-generation log is written; exercises
+  log-generation selection on load. Recovers `baseline + M`. May be
+  observationally identical to the previous point when one generation is in
+  play.
+- `after_primary`: fully committed (clean hive); reload needs no recovery.
+
+An unknown `point` is a `BAD_REQUEST` (no dedicated code). The handle may be
+consumed by the call; the harness closes it and reloads by path. The recovery
+oracle is the pre-crash canonical dump of the same hive (a libreg-internal
+property), not a comparison against the Windows agent.
+
 ## Canonical JSON Form
 
 Both agents must serialize hives to this exact structure for semantic
@@ -276,8 +311,10 @@ For v1.5 hives (Windows 8.1+), libreg writes dual logs:
 - On crash recovery, both logs are inspected and the most recent
   consistent set is applied
 
-Agents must save with logs by default. The harness has a separate test
-mode that simulates crashes between log write and primary write.
+Agents must save with logs by default. The harness simulates crashes
+between log write and primary write via the `POST /test/crash_save`
+test-mode endpoint (see "Test-mode endpoints"), which the Linux agent
+implements and the Windows agent does not.
 
 ## Test Categories
 
@@ -328,6 +365,11 @@ is distinct from `TYPE_MISMATCH`: the latter applies when a well-formed
 
 ## Change Log
 
+- 0.1.8 (minor): add the `POST /test/crash_save` test-mode endpoint (Linux
+  agent only; Windows does not implement it) that drives the `recovery` tag,
+  now that the implementation has landed (libreg log recovery, the agent
+  endpoint, and the harness recovery runner are all merged; issue #61, ADR
+  0004). Additive and test-only; no change to the production protocol.
 - 0.1.7 (patch): correct invariant 11's subkey-list promotion threshold from
   the approximate "1015" to 507, the per-leaf cap offreg actually uses
   (verified against tests/corpus/synthetic/ref_ri.hiv: 1100 subkeys form an

@@ -13,8 +13,10 @@
 //! second Linux agent can stand in for the Windows side during bring-up.
 
 mod client;
+mod client_differ;
 mod corpus;
 mod differ;
+mod recovery;
 mod report;
 mod runner;
 mod smb;
@@ -41,6 +43,16 @@ struct Args {
     windows_hive_dir: String,
     corpus_dir: PathBuf,
     windows_smb: bool,
+    /// Client-differential mode: directory of client test YAMLs. When set, the
+    /// harness validates the reg/sc CLIs vs the Windows tools instead of the
+    /// agent differential.
+    client_tests_dir: Option<PathBuf>,
+    /// Path to the `reg` binary for client-differential mode.
+    reg_bin: Option<PathBuf>,
+    /// Directory of recovery test YAMLs. When set, the harness drives the
+    /// crash-injection hook against the libreg agent and reports a `recovery`
+    /// pass rate.
+    recovery_tests_dir: Option<PathBuf>,
 }
 
 impl Default for Args {
@@ -58,6 +70,9 @@ impl Default for Args {
             windows_hive_dir: "C:\\Windows\\Temp".to_string(),
             corpus_dir: PathBuf::from("tests/corpus/synthetic"),
             windows_smb: false,
+            client_tests_dir: None,
+            reg_bin: None,
+            recovery_tests_dir: None,
         }
     }
 }
@@ -85,6 +100,9 @@ fn parse_args() -> Args {
             "--windows-hive-dir" => a.windows_hive_dir = next(),
             "--corpus-dir" => a.corpus_dir = PathBuf::from(next()),
             "--windows-smb" => a.windows_smb = true,
+            "--client-tests-dir" => a.client_tests_dir = Some(PathBuf::from(next())),
+            "--reg-bin" => a.reg_bin = Some(PathBuf::from(next())),
+            "--recovery-tests-dir" => a.recovery_tests_dir = Some(PathBuf::from(next())),
             "-h" | "--help" => {
                 println!(
                     "libreg-harness [--linux-host H] [--linux-port N] \\\n  \
@@ -149,6 +167,42 @@ fn load_tests(dir: &PathBuf) -> Vec<TestDef> {
     tests
 }
 
+/// Client-differential mode: run the reg/sc CLI tests under `dir` against the
+/// Windows tools on the VM, using `agent` (the libreg agent) to canonicalize
+/// both result hives. Holds the VM flock for the run.
+fn run_client_differential(agent: &Client, args: &Args, dir: &PathBuf) -> ExitCode {
+    let vm_host = match &args.windows_host {
+        Some(h) => split_host_port(h, 0).0,
+        None => fatal("client-differential mode needs --windows-host (the VM)"),
+    };
+    let reg_bin = args
+        .reg_bin
+        .clone()
+        .unwrap_or_else(|| fatal("client-differential mode needs --reg-bin <path to our reg>"));
+    let _lock = winvm_lock::WinVmLock::acquire(&args.lock_path).unwrap_or_else(|e| fatal(e));
+    eprintln!("Client-differential: {} vs reg.exe on {vm_host}", reg_bin.display());
+
+    let results = client_differ::run(agent, &vm_host, &reg_bin, dir);
+    let total = results.len();
+    let passed = results.iter().filter(|r| r.passed).count();
+    eprintln!();
+    for r in &results {
+        eprintln!("  {:34} {}", r.name, if r.passed { "PASS" } else { "FAIL" });
+        if !r.passed {
+            eprintln!("      {}", r.detail);
+        }
+    }
+    // Spec ruling (issue #68): the client differential asserts the same
+    // canonical-JSON equality as the agent path, so it reports under the
+    // existing `semantic` tag, not a separate `client-semantic` one.
+    eprintln!("\nsemantic (client-differential): {passed}/{total}");
+    if total > 0 && passed == total {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
+}
+
 fn main() -> ExitCode {
     let mut args = parse_args();
     // SMB byte-pull needs the Windows agent to save into the exported `winreg`
@@ -172,6 +226,14 @@ fn main() -> ExitCode {
         .version()
         .unwrap_or_else(|e| fatal(format!("{e}\nIs the Linux agent running on {lhost}:{lport}?")));
     eprintln!("Linux agent: agent={} protocol={} backend={}", lh.agent, lh.protocol, lh.backend);
+
+    // Client-differential mode: validate the reg/sc CLIs vs the Windows tools.
+    // Uses the (libreg) agent only to canonicalize result hives; no Windows
+    // agent, so dispatch before the Windows handshake.
+    if let Some(dir) = &args.client_tests_dir {
+        return run_client_differential(&linux, &args, dir);
+    }
+
     let mut windows_backend = None;
     let mut windows_agent = None;
     if let Some(w) = &windows {
@@ -253,6 +315,18 @@ fn main() -> ExitCode {
         if !corpus.is_empty() {
             eprintln!("Loaded {} corpus hives from {}", corpus.len(), args.corpus_dir.display());
             results.extend(corpus);
+        }
+    }
+
+    // Recovery: drive the crash-injection hook against the libreg agent. Single
+    // agent, tagged `recovery`, so honor the tag filter.
+    if let Some(dir) = &args.recovery_tests_dir {
+        if args.tag_filter.as_deref().map_or(true, |t| t == "recovery") {
+            let rec = recovery::run(&linux, dir);
+            if !rec.is_empty() {
+                eprintln!("Ran {} recovery test(s) from {}", rec.len(), dir.display());
+                results.extend(rec);
+            }
         }
     }
 

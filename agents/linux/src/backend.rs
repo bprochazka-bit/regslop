@@ -50,6 +50,12 @@ pub trait Backend: Send + Sync {
     fn hive_save(&self, handle: &str) -> Result<u64>;
     fn hive_close(&self, handle: &str) -> Result<()>;
 
+    /// Test-only crash injection (`/test/crash_save`, ADR 0004 / issue #61):
+    /// execute a recoverable save truncated at `point`, leaving the on-disk
+    /// primary and logs in a mid-save state. Only the libreg backend supports
+    /// it; the in-memory backend has no transaction logs.
+    fn crash_save(&self, handle: &str, point: &str) -> Result<u64>;
+
     fn key_create(&self, handle: &str, path: &str) -> Result<()>;
     fn key_delete(&self, handle: &str, path: &str, recursive: bool) -> Result<()>;
     fn key_rename(&self, handle: &str, path: &str, new_name: &str) -> Result<()>;
@@ -225,6 +231,13 @@ impl Backend for MemBackend {
             hive.saved_bytes = Some(bytes);
             Ok(n)
         })
+    }
+
+    fn crash_save(&self, _handle: &str, _point: &str) -> Result<u64> {
+        // The in-memory backend writes a JSON envelope and keeps no transaction
+        // logs, so it cannot model a mid-save crash. The recovery harness only
+        // drives this against the libreg backend.
+        Err(AgentError::new(Code::Internal, "crash_save is only supported by the libreg backend"))
     }
 
     fn hive_close(&self, handle: &str) -> Result<()> {

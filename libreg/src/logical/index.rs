@@ -125,8 +125,9 @@ pub(super) fn free_subkey_list(
     image: &mut HiveImage,
     list_offset: u32,
 ) -> Result<(), LogicalError> {
-    if signature_of(image.content(list_offset)) == Some(*b"ri") {
-        let ri = IndexRoot::parse(image.content(list_offset))?;
+    let payload = image.try_content(list_offset)?;
+    if signature_of(payload) == Some(*b"ri") {
+        let ri = IndexRoot::parse(payload)?;
         for leaf_off in ri.leaf_offsets {
             image.free(leaf_off);
         }
@@ -157,13 +158,13 @@ pub fn list_entries(
 /// Collect the subkey nk offsets reachable from the list cell at
 /// `list_offset`, descending one level through an ri index into its leaves.
 fn subkey_offsets(image: &HiveImage, list_offset: u32) -> Result<Vec<u32>, LogicalError> {
-    let payload = image.content(list_offset);
+    let payload = image.try_content(list_offset)?;
     if signature_of(payload) == Some(*b"ri") {
         let ri = IndexRoot::parse(payload)?;
         let mut out = Vec::new();
         for leaf_off in ri.leaf_offsets {
             // An ri points only at leaves (lf/lh/li), never another ri.
-            out.extend(leaf_offsets(image.content(leaf_off))?);
+            out.extend(leaf_offsets(image.try_content(leaf_off)?)?);
         }
         Ok(out)
     } else {

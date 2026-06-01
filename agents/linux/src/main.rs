@@ -182,5 +182,6 @@ fn path_is_known(path: &str) -> bool {
             | "/hive/dump"
             | "/hive/checksum"
             | "/hive/validate"
+            | "/test/crash_save"
     )
 }

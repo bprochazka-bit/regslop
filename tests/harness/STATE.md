@@ -1,6 +1,90 @@
 # Harness: STATE
 
-Last updated: 2026-05-31
+Last updated: 2026-06-01
+
+## Recovery tag: driven, no longer n/a (ADR 0004 / issue #61)
+
+`src/recovery.rs` drives libreg's crash-injection hook. Per case it runs an op
+sequence to build and commit a baseline, applies a mutation M (the ops after the
+last `hive_save`), captures the in-memory dump D1, then `POST /test/crash_save
+{ point }` instead of a normal save, closes, reloads (which recovers), and
+asserts the reloaded dump equals D1. Each case yields a `recovery`-tagged
+`TestResult`, so the report's `recovery:` line shows a real pass rate.
+
+- Reuses the runner op helpers (`endpoint`/`build_body`/`substitute`, now
+  `pub(crate)`) and the semantic differ (timestamps ignored).
+- Single agent, libreg only: it needs `/test/crash_save` + log-backed
+  save/load. The in-memory backend reports `crash_save` unsupported, which maps
+  to `Na` (skipped), not a failure.
+- Flag `--recovery-tests-dir DIR`; results append to the run like the corpus.
+  Recovery is independent of the cross-agent differential (offreg writes no
+  logs, so this is a libreg-internal property).
+- `tests/recovery/recover.yaml`: 3 cases, one per crash point. **recovery 3/3**
+  against the libreg agent (logged-but-not-committed write recovers on reload).
+
+Depends on the agent PR (`/test/crash_save` + log-backed save/load); built and
+verified together. Once both land, the spec agent can add `/test/crash_save` to
+CONTRACTS (MINOR, Linux-only) per ADR 0004.
+
+## Client-differential mode, phase 1 (issue #68)
+
+Validates the `reg`/`sc` CLIs the way libreg is validated: run the same command
+with our `reg` against a hive file and with real `reg.exe` against an equivalent
+hive on the VM, then compare the result hives in canonical form.
+
+- `src/client_differ.rs`: the runner. For each case it seeds a fresh empty hive
+  (made via the libreg agent), runs the ops on both sides, and compares.
+  - Linux: our `reg <verb> HKLM\<key> ... --hive L.hiv`.
+  - Windows: `reg load HKLM\HarnessTmp <hive> && <ops> & reg unload` run as
+    SYSTEM via impacket `atexec` (task scheduler over SMB; `reg load`/`unload`
+    need admin, and DCOM ports are filtered so wmiexec is out). Result pulled
+    over the `winreg` share. Admin creds baked in (temporal lab VM).
+  - Both result hives are canonicalized by loading them into the libreg agent
+    (`/hive/load`+`/hive/dump`); compared with the semantic differ using a new
+    `SemanticOptions.ignore_security` (reg/sc do not edit ACLs, and a
+    SYSTEM-run reg.exe yields a different owner than our tool).
+- Flags: `--client-tests-dir DIR --reg-bin PATH --windows-host HOST`. Dispatched
+  before the Windows handshake (no Windows agent needed). Holds the VM flock.
+- Corpus: `tests/client/{reg_add,reg_delete}.yaml`, 8 cases (REG types, nested
+  keys, default value, multi-sz, overwrite, value/recursive-key/all-values
+  delete). **8/8 green vs the live VM.**
+
+Dependency: the `reg` binary lives in `clients/` (the clients agent's subtree,
+not yet on main); the runner takes `--reg-bin` so it is decoupled. Built from
+the proposal branch for this run.
+
+Finding the differential caught (filed for the clients agent): a bare
+`reg add KEY /f` (no `/v`) — reg.exe leaves an empty default value on the new
+leaf key; our `reg` creates no value. Kept out of the green corpus until
+resolved (see the `add_nested_keys` note).
+
+cmd-`%` escaping for REG_EXPAND_SZ values containing `%` (e.g. `%PATH%`) is a
+known follow-up: cmd.exe expands them through atexec; phase-1 values avoid `%`.
+
+## Wide-key ri promotion test (issue #40)
+
+`tests/wide_key.yaml` creates 1100 subkeys under one key, forcing ri promotion
+(an ri index root over lh leaves capped at 507, matching ref_ri.hiv:
+[507, 507, 86]). Generated (3315 lines). libreg shipped step-8 ri promotion, so
+this validates the 507 figure end-to-end against offreg, not just from the
+static fixture: with `--windows-smb`, inv11 (byte-level) runs on both libreg's
+and offreg's saved regf and confirms the ri/lh structure on each. Result:
+semantic + structural PASS on both sides (17/17, 10/10). Closes the wide-key
+half of issue #40; the inv11 "un-skip" half was already done in check_bytes
+(#39/#54).
+
+## Coverage: big-data values and malformed requests (latest session)
+
+Two new test definitions, both green libreg-vs-offreg:
+
+- `tests/big_data_value.yaml`: a 20001-byte REG_BINARY value, over the 16344
+  threshold, so it exercises the big-data (db) cell path in both backends. The
+  data round-trips identically through real regf.
+- `tests/badrequest.yaml` (`malformed_requests_rejected`): a leading-separator
+  path and an unknown value-type constant, both must surface as BAD_REQUEST
+  (0.1.4) on both sides. This caught a real LibregBackend conformance gap (it
+  accepted a leading-separator path because libreg's path splitter is lenient);
+  fixed agent-side. libreg-vs-offreg is 16/16 semantic with these added.
 
 ## Linux-side byte-level structural checks (latest session)
 

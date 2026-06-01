@@ -10,8 +10,8 @@
 //! What works: key create/delete (single keys and full paths, recursive
 //! delete), case-insensitive lookup, subkey enumeration across all list forms
 //! with lh->ri promotion, value set/get/delete (inline, plain, and big-data db
-//! cells), and descriptor-shared sk cells with refcounting. Transaction logs
-//! (step 11) are the main piece not yet implemented.
+//! cells), and descriptor-shared sk cells with refcounting. Crash recovery
+//! (step 11) builds on this layer in [`crate::log`].
 
 pub mod index;
 pub mod key;
@@ -63,6 +63,10 @@ pub struct Hive {
     image: HiveImage,
     root_offset: u32,
     last_written: u64,
+    /// The committed sequence number (generation) of the loaded hive. A save
+    /// produces the next generation; recovery selects the highest one across
+    /// the primary and the logs (see [`crate::log`]).
+    generation: u32,
 }
 
 impl Hive {
@@ -93,6 +97,8 @@ impl Hive {
             image: HiveImage::from_bins(bins),
             root_offset: bb.root_cell_offset,
             last_written: bb.last_written,
+            // A clean hive's committed generation is its secondary sequence.
+            generation: bb.secondary_seq,
         };
         // The root offset must frame a real nk, or every later operation that
         // dereferences it would fault. Cell::parse_at is bounds-safe.
@@ -103,6 +109,34 @@ impl Hive {
     /// Serialize the hive back to a complete file (base block + bins).
     pub fn to_file(&self) -> Vec<u8> {
         self.image.to_hive_file(self.root_offset, self.last_written)
+    }
+
+    /// The committed sequence number (generation) of this hive.
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// Set the committed generation. A completed recoverable save advances it
+    /// so the next save produces a strictly newer generation on the same
+    /// in-memory handle (see [`crate::log::crash_save_plan`]).
+    pub fn set_generation(&mut self, generation: u32) {
+        self.generation = generation;
+    }
+
+    /// A complete hive file for this in-memory state stamped at sequence
+    /// `generation` (a clean snapshot: primary == secondary == generation,
+    /// checksum recomputed). Used for both the committed primary and the log
+    /// journal of a recoverable save (see [`crate::log`]).
+    pub fn snapshot(&self, generation: u32) -> Vec<u8> {
+        let mut bb = BaseBlock::create(self.root_offset, self.image.bins_size(), self.last_written);
+        bb.primary_seq = generation;
+        bb.secondary_seq = generation;
+        bb.recompute_checksum();
+
+        let mut file = Vec::with_capacity(BASE_BLOCK_SIZE + self.image.bins().len());
+        file.extend_from_slice(&bb.to_bytes());
+        file.extend_from_slice(self.image.bins());
+        file
     }
 
     /// Check the root offset frames a valid nk. Uses the bounds-safe cell
@@ -229,7 +263,8 @@ impl Hive {
     pub fn key_security(&self, path: &str) -> Result<Vec<u8>, LogicalError> {
         let off = self.resolve(path)?.ok_or(LogicalError::NotFound)?;
         let nk = key::read_nk(&self.image, off)?;
-        let sk = crate::format::sk::SecurityCell::parse(self.image.content(nk.security_offset))?;
+        let sk =
+            crate::format::sk::SecurityCell::parse(self.image.try_content(nk.security_offset)?)?;
         Ok(sk.descriptor)
     }
 
@@ -1087,5 +1122,41 @@ mod tests {
         bytes[sk_size_field..sk_size_field + 4].copy_from_slice(&0u32.to_le_bytes());
         let hive = Hive::from_file_bytes(&bytes).expect("loads, root still valid");
         assert!(!hive.validate().is_empty(), "walk corruption flagged");
+    }
+
+    // The root nk record begins at bins offset 0x24 (cell at 0x20 + 4-byte
+    // size). Field offsets within the record come from format::nk.
+    const ROOT_NK_RECORD: usize = BASE_BLOCK_SIZE + 0x24;
+
+    #[test]
+    fn corrupt_subkey_list_offset_errors_not_panics() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("A").unwrap();
+        let mut bytes = hive.to_file();
+        // Point the root's subkeys_list_offset (record offset 0x1c) off the end.
+        let field = ROOT_NK_RECORD + 0x1c;
+        bytes[field..field + 4].copy_from_slice(&0x00ff_ffffu32.to_le_bytes());
+
+        let loaded = Hive::from_file_bytes(&bytes).expect("loads; root nk still parses");
+        // Enumerating subkeys dereferences the bogus offset; it must error.
+        assert!(
+            matches!(loaded.subkeys(""), Err(LogicalError::Format(_))),
+            "bogus subkey-list offset errors instead of panicking"
+        );
+    }
+
+    #[test]
+    fn corrupt_security_offset_errors_not_panics() {
+        let hive = Hive::new_empty();
+        let mut bytes = hive.to_file();
+        // Point the root's security_offset (record offset 0x2c) off the end.
+        let field = ROOT_NK_RECORD + 0x2c;
+        bytes[field..field + 4].copy_from_slice(&0x00ff_ffffu32.to_le_bytes());
+
+        let loaded = Hive::from_file_bytes(&bytes).expect("loads; root nk still parses");
+        assert!(
+            matches!(loaded.key_security(""), Err(LogicalError::Format(_))),
+            "bogus security offset errors instead of panicking"
+        );
     }
 }

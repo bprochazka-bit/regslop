@@ -2,30 +2,75 @@
 
 Last updated: 2026-05-31 (library agent)
 
-Merge state: steps 1-10 plus the offreg-alignment pass and security get/set
-are on main (allocator #27, key create #33, value set #37, offreg-align #41,
-step 6 read #44, step 8 ri-promote #45, step 7 delete #47, step 9 big-data
-#53, set_key_security #57, all MERGED). The core mutation surface is complete.
+Merge state: ALL 11 STEPS are on main (steps 1-10 + offreg-alignment + security
+get/set + load robustness + panic-safety + step 11 recovery #66), and the
+harness reports libreg-vs-offreg GREEN (16/16 semantic, 9/9 structural, 8/8
+roundtrip). `recovery` (step 11) is libreg-internal and waits on the agent
+wiring `/test/crash_save` to drive the prototype (issue #61).
 
-THIS session (branch `agent/library-load-robustness` off main): LOAD-PATH
-HARDENING + validation, prompted by reading the linux agent's libreg_backend.
-- `from_file_bytes` used to slice `file[BASE_BLOCK_SIZE..end]` where `end`
-  comes from the hive's own (corruption-controlled) `hbins_size` field, so a
-  truncated/malformed hive PANICKED. Now it bounds-checks `end` and verifies
-  the root cell frames a valid nk (bounds-safe `Cell::parse_at`), returning a
-  `Format` error instead. This protects the agent's hive_load and the fuzz/
-  corpus tags.
-- `Hive::validate() -> Vec<String>` (empty = valid): the offline structural
-  check behind `GET /hive/validate` (the agent currently stubs it). Walks the
-  cells (invariants 5/6/9/10) and checks the root nk.
-- Tests: truncated and bogus-root hives are rejected (not panic); a real hive
-  round-trips; validate passes for valid hives and flags a hive whose sk cell
-  size is zeroed (loads but fails the walk).
-- NOTE: this does not make EVERY operation panic-proof on arbitrary malformed
-  interiors (a walk-clean hive can still hold a bogus interior offset that
-  `image.content` would index out of bounds). Full panic-safety would mean
-  bounds-checking `HiveImage::content`; deferred. The common corruptions
-  (truncation, bad root) are now safe.
+THIS session (branch `agent/library-recovery-genfix` off main): a CORRECTNESS
+FIX to the recovery prototype merged in #66. Re-reading issue #61, the harness
+keeps the SAME handle across the baseline `hive_save` and the `crash_save`
+(no reload between), but `crash_save_plan` did not advance the in-memory
+generation, so two saves on one handle produced the same generation and
+`recover` would wrongly prefer the baseline. My #66 tests masked it by
+reloading between saves.
+- Fix: a completed save (`AfterPrimary`) now advances the handle's generation
+  (`crash_save_plan` takes `&mut Hive`; `Hive::set_generation`), so a later
+  save/crash on the same handle journals a strictly newer generation. The
+  pre-primary crash points do not advance (the save did not commit; the handle
+  is discarded after a simulated crash).
+- Tests rewritten to run the recovery sequence on a SINGLE handle, matching the
+  harness exactly (and so actually exercising the fix). 133 lib + corpus green.
+
+----- step 11 recovery prototype (#66, merged) and earlier below -----
+
+THIS session (branch `agent/library-recovery` off main): STEP 11, the dual-log
+crash-recovery PROTOTYPE (`src/log/`, Layer 3), answering issue #61.
+- Scheme: a save is a *generation*, a full self-consistent hive snapshot
+  (`Hive::snapshot(gen)`, valid checksum) stamped with a sequence number. A
+  save journals the new generation to the alternating log slot, then commits
+  the primary. `recover(primary, log1, log2)` picks the highest valid
+  generation; a torn (bad-checksum) log is ignored, so a clean (log, primary)
+  pair always survives (the point of dual logs, ADR 0004 part A).
+- API: `Hive::generation()`, `Hive::snapshot(gen)`; `log::{Slot, CrashPoint,
+  log_slot_for, crash_save_plan, recover}`. `crash_save_plan(hive, point)`
+  returns the ordered `(Slot, bytes)` writes a recoverable save performs,
+  truncated at the crash point, for the agent's `/test/crash_save` to execute.
+- Tests (src/log/mod.rs): the full issue-#61 recovery sequence for all three
+  crash points recovers baseline+M; generation selection (newer log wins); a
+  torn log falls back to the clean primary; alternating slots; empty-input
+  error. An in-memory `Disk` stand-in mirrors the harness's file writes.
+- CAVEAT / for issue #61: this is a FULL-SNAPSHOT journal, so the two
+  pre-primary points (after_first_log, after_log_before_primary) recover
+  identically; the distinction only matters to a dirty-page delta scheme (a
+  future optimization that does not change the recovery contract). Posted the
+  prototype contract on issue #61 for the spec/harness/linux agents.
+
+----- panic-safety + load robustness (now merged) and earlier below -----
+
+THIS session (branch `agent/library-content-safety` off main): completed the
+PANIC-SAFETY work begun in #59. Every operation on a loaded hive now returns
+an error instead of panicking, even when an interior offset (a child offset, a
+value/sk/list/data offset) points anywhere.
+- Added `HiveImage::try_content(offset) -> Result<&[u8], FormatError>`, a
+  bounds-checked sibling of `content` (which stays for create-path offsets the
+  allocator just produced). Switched every loaded-data read to it: `read_nk`,
+  `read_sk`, vk/lh/li/ri/db parses, value/segment data, and the u32 offset
+  arrays (now length-checked). The read helpers already returned `Result`, so
+  no signatures changed.
+- Tests: a hive whose root nk's subkeys_list_offset (and another whose
+  security_offset) points off the end LOADS (the root nk still parses), and the
+  operation that dereferences it returns `Format` rather than panicking.
+- Combined with #59, libreg no longer panics on any loaded bytes. (The
+  create/write path still uses the panicking `content`/`content_mut`, which is
+  correct: those offsets come from `alloc`.)
+
+----- #59 load-path hardening (now merged); step 9 + earlier below -----
+
+#59: `from_file_bytes` bounds-checks the bins slice and the root cell;
+`Hive::validate() -> Vec<String>` is the offline structural check behind
+`GET /hive/validate`.
 
 ----- step 9 (big-data) section below; earlier sessions further down -----
 
