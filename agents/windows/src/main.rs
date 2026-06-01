@@ -124,8 +124,10 @@ fn main() {
                 match serde_json::from_str(&raw) {
                     Ok(v) => v,
                     Err(e) => {
+                        // A body that is not valid JSON is a malformed request
+                        // (caller error), not an agent bug. CONTRACTS 0.1.4.
                         let resp = response::fail(&error::AgentError::new(
-                            "INTERNAL",
+                            "BAD_REQUEST",
                             format!("invalid JSON body: {e}"),
                         ));
                         respond(request, &resp);

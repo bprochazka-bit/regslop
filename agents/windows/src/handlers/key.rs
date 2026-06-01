@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 
-use super::{get_hive, opt_bool, req_str};
+use super::{get_hive, opt_bool, req_path, req_str};
 use crate::error::AgentError;
 use crate::offreg::key::{self, Key};
 use crate::time::filetime_to_iso8601;
@@ -12,7 +12,7 @@ use crate::state::AppState;
 pub fn create(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
     let hive = arc.lock().unwrap();
-    let path = req_str(body, "path")?;
+    let path = req_path(body, "path")?;
     let (_key, created) = Key::create(hive.root(), &path)?;
     if !created {
         return Err(AgentError::new(
@@ -26,13 +26,11 @@ pub fn create(state: &AppState, body: &Value) -> Result<Value, AgentError> {
 /// POST /key/delete { handle, path, [recursive] } -> {}
 ///
 /// Non-recursive deletion of a key that still has subkeys is refused, mirroring
-/// offreg's own behavior. (CONTRACTS has no dedicated "has children" code, so
-/// this surfaces as INTERNAL with a descriptive message; flagged as a spec gap
-/// in STATE.md.)
+/// offreg's own behavior, and returns KEY_HAS_CHILDREN (CONTRACTS 0.1.2).
 pub fn delete(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
     let hive = arc.lock().unwrap();
-    let path = req_str(body, "path")?;
+    let path = req_path(body, "path")?;
     let recursive = opt_bool(body, "recursive", false);
 
     if !recursive {
@@ -59,7 +57,7 @@ pub fn delete(state: &AppState, body: &Value) -> Result<Value, AgentError> {
 pub fn rename(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
     let hive = arc.lock().unwrap();
-    let path = req_str(body, "path")?;
+    let path = req_path(body, "path")?;
     let new_name = req_str(body, "new_name")?;
 
     let parent = path.rsplit_once('\\').map(|(p, _)| p).unwrap_or("");
@@ -85,7 +83,7 @@ pub fn rename(state: &AppState, body: &Value) -> Result<Value, AgentError> {
 pub fn list(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
     let hive = arc.lock().unwrap();
-    let path = req_str(body, "path")?;
+    let path = req_path(body, "path")?;
     let key = Key::open(hive.root(), &path)?;
 
     let mut subkeys: Vec<String> = key.enum_subkeys()?.into_iter().map(|(n, _)| n).collect();
@@ -102,7 +100,7 @@ pub fn list(state: &AppState, body: &Value) -> Result<Value, AgentError> {
 pub fn info(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
     let hive = arc.lock().unwrap();
-    let path = req_str(body, "path")?;
+    let path = req_path(body, "path")?;
     let key = Key::open(hive.root(), &path)?;
     let info = key.info()?;
     Ok(json!({
