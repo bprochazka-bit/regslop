@@ -192,7 +192,10 @@ fn run_client_differential(agent: &Client, args: &Args, dir: &PathBuf) -> ExitCo
             eprintln!("      {}", r.detail);
         }
     }
-    eprintln!("\nclient-semantic: {passed}/{total}");
+    // Spec ruling (issue #68): the client differential asserts the same
+    // canonical-JSON equality as the agent path, so it reports under the
+    // existing `semantic` tag, not a separate `client-semantic` one.
+    eprintln!("\nsemantic (client-differential): {passed}/{total}");
     if total > 0 && passed == total {
         ExitCode::SUCCESS
     } else {
