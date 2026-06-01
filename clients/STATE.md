@@ -28,6 +28,10 @@ Everything below builds clean (`cargo build`), is clippy-clean
 - `regfile`: `.reg` (Windows Registry Editor Version 5.00) export and import.
   Export is UTF-16LE with BOM (matches real `reg export`); import accepts
   UTF-16LE/BE and UTF-8, handles continued hex lines, key and value deletions.
+- `sddl`: binary security descriptor <-> SDDL string, mirroring the agent codec
+  (`agents/linux/src/sddl.rs`) so tokens match the harness/agents (ADR 0003).
+  Built on libreg's public `format::security_descriptor` types. Round-trips the
+  ratified default descriptor and custom owner/group/DACL forms.
 - `session`: open a hive file into `libreg::logical::Hive`, dump a key or a
   whole subtree, copy subtrees, and save.
 
@@ -58,14 +62,17 @@ Everything below builds clean (`cargo build`), is clippy-clean
 - Standalone server (std-only HTTP in `http.rs`, std-only JSON in `json.rs`),
   links libreg through cli-core. Roots come from the mount map or `--hive`.
 - REST: `/api/roots`, `/api/key` (subkeys + typed values), `/api/validate`
-  (libreg structural check), `/api/security` (raw self-relative descriptor as
-  hex, a thing Windows regedit does not surface), `/api/export` (.reg
+  (libreg structural check), `/api/security` (GET returns SDDL plus the raw
+  self-relative descriptor as hex, which Windows regedit does not surface),
+  `/api/setsecurity` (POST, edit permissions via SDDL), `/api/export` (.reg
   download), and POST `/api/setvalue` `/api/deletevalue` `/api/createkey`
   `/api/deletekey` (each opens the file, mutates, saves).
 - Single-page UI (`static/index.html`): lazy tree browser, value table with
-  add/edit/delete, new-key, validate, security, and export-subtree.
-- Verified: server serves the UI and all read/validate/setvalue endpoints;
-  a POSTed value persists to the hive file.
+  add/edit/delete, new-key, validate, an editable SDDL permissions dialog, and
+  export-subtree.
+- Verified: server serves the UI and all read/validate/setvalue endpoints; a
+  POSTed value persists; security reads as SDDL, an edited SDDL persists to the
+  real hive and the hive still validates.
 
 ## Assumptions
 
@@ -88,10 +95,10 @@ Everything below builds clean (`cargo build`), is clippy-clean
    diff resulting hives in canonical form. This is the intended acceptance bar
    (`semantic` green) and would formally validate the clients, not just the
    local smoke tests.
-2. SDDL decode/edit in regedit: render the raw descriptor as SDDL and an ACE
-   table, and allow editing (libreg has `set_key_security`). Needs an
-   SDDL<->binary codec in cli-core (the Linux agent has one in
-   `agents/linux/src/sddl.rs` to mirror, not import).
+2. SDDL display and editing in regedit: DONE this session (cli-core `sddl`
+   module + `/api/security` GET returning SDDL + `/api/setsecurity` POST + an
+   editable dialog). A future refinement is a structured ACE table editor
+   instead of a raw SDDL text field, and rendering the SACL when present.
 3. regedit structure inspector: surface the hbin/cell walk and big-data (db)
    layout (libreg's format layer can drive this); add a canonical-dump and
    two-hive diff view.

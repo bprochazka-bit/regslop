@@ -118,6 +118,7 @@ fn dispatch(state: &AppState, req: &Request) -> Response {
         ("GET", "/api/key") => api_key(state, &req.query),
         ("GET", "/api/validate") => api_validate(state, &req.query),
         ("GET", "/api/security") => api_security(state, &req.query),
+        ("POST", "/api/setsecurity") => api_setsecurity(state, &req.form),
         ("GET", "/api/export") => return api_export(state, &req.query),
         ("POST", "/api/setvalue") => api_setvalue(state, &req.form),
         ("POST", "/api/deletevalue") => api_deletevalue(state, &req.form),
@@ -193,14 +194,28 @@ fn api_security(state: &AppState, q: &HashMap<String, String>) -> CliResult<Stri
     let file = file_for(state, param(q, "root"))?;
     let path = param(q, "path");
     let session = Session::open(file)?;
-    // libreg exposes the raw self-relative descriptor bytes. Windows regedit
-    // never shows these; we surface them as hex (an SDDL decoder is a follow-up).
+    // libreg exposes the raw self-relative descriptor bytes; cli-core decodes
+    // them to SDDL (the readable, editable form). We return both: the SDDL for
+    // editing and the raw hex, which Windows regedit never surfaces.
     let desc = session.hive().key_security(path)?;
+    let sddl = cli_core::sddl::to_sddl(&desc)?;
     Ok(json::object(&[
         ("path", json::string(path)),
+        ("sddl", json::string(&sddl)),
         ("descriptor_hex", json::string(&value::to_hex_upper(&desc))),
         ("descriptor_len", desc.len().to_string()),
     ]))
+}
+
+fn api_setsecurity(state: &AppState, f: &HashMap<String, String>) -> CliResult<String> {
+    let file = file_for(state, param(f, "root"))?;
+    let path = param(f, "key");
+    // Convert the edited SDDL back to a binary descriptor before storing it.
+    let descriptor = cli_core::sddl::from_sddl(param(f, "sddl"))?;
+    let mut session = Session::open(file)?;
+    session.hive_mut().set_key_security(path, descriptor)?;
+    session.save()?;
+    Ok(ok())
 }
 
 fn api_export(state: &AppState, q: &HashMap<String, String>) -> Response {

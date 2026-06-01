@@ -235,9 +235,13 @@ async function showSecurity() {
   if (!requireKey()) return;
   try {
     const j = await api("/api/security", { root: state.root, path: state.path });
-    dialog("Security descriptor (" + j.descriptor_len + " bytes, raw)", [
-      {id:"hex",label:"Self-relative descriptor (hex)",value:j.descriptor_hex},
-    ], async () => {});
+    dialog("Permissions (SDDL) for " + (state.path || state.root), [
+      {id:"sddl",label:"Security descriptor (SDDL, editable)",value:j.sddl},
+      {id:"hex",label:"Raw self-relative descriptor (" + j.descriptor_len + " bytes, read-only)",value:j.descriptor_hex},
+    ], async f => {
+      await post("/api/setsecurity", { root: state.root, key: state.path, sddl: f.sddl });
+      setStatus("Security descriptor updated.");
+    });
   } catch (e) { setStatus(e.message, true); }
 }
 

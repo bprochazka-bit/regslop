@@ -9,6 +9,7 @@
 //!   the Windows tools even though there is no live registry on Linux.
 //! - [`value`]: the REG_* type codec (names, CLI data parsing, display).
 //! - [`regfile`]: import and export of the `.reg` text format.
+//! - [`sddl`]: convert key security between its binary form and SDDL text.
 //! - [`session`]: open a hive file, resolve a path inside it, save it back.
 //!
 //! The crate has no dependencies beyond `libreg` and the standard library.
@@ -17,6 +18,7 @@ pub mod error;
 pub mod mount;
 pub mod path;
 pub mod regfile;
+pub mod sddl;
 pub mod session;
 pub mod value;
 
