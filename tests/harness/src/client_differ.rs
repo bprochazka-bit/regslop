@@ -1,0 +1,279 @@
+//! Client-differential mode: validate the `reg`/`sc` Linux CLIs the same way as
+//! libreg, against the Windows originals. Run the same operation with our tool
+//! against a hive file and with real `reg.exe`/`sc.exe` against an equivalent
+//! hive on the VM, then compare the two result hives in canonical form. See
+//! `clients/proposals/harness-client-differential.md` and issue #68.
+//!
+//! Both result hives are canonicalized by loading them into the libreg agent
+//! (`/hive/load` + `/hive/dump`), so the same logical comparison that grades the
+//! agent differential applies. Key security is ignored: `reg`/`sc` do not edit
+//! ACLs, and a key created by a SYSTEM-run `reg.exe` has a different owner than
+//! one our tool creates (proposal scope).
+//!
+//! Transport for the Windows side: `reg load`/`unload` need admin
+//! (SeRestorePrivilege), and DCOM ports are filtered, so commands run as SYSTEM
+//! via impacket `atexec` (task scheduler over SMB). The result hive is pushed /
+//! pulled over the same `winreg` share. Admin creds are baked in (temporal lab
+//! VM), like the SMB creds in `smb.rs`.
+
+use crate::client::Client;
+use crate::differ::semantic::{self, SemanticOptions};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::path::Path;
+use std::process::Command;
+
+const VM_ADMIN_USER: &str = "administrator";
+const VM_ADMIN_PASS: &str = "password";
+const ATEXEC: &str = "/usr/share/doc/python3-impacket/examples/atexec.py";
+const WIN_SHARE_DIR: &str = "C:\\winreg";
+const MOUNT: &str = "HKLM\\HarnessTmp";
+const SEED: &str = "/tmp/client_seed.hiv";
+
+#[derive(Deserialize)]
+struct ClientTest {
+    name: String,
+    /// Shared command tails, e.g. `add Software\Foo /v Greeting /t REG_SZ /d hello /f`.
+    /// The key (second token) is relative to the hive root; the runner prefixes
+    /// `HKLM\` for our tool and `HKLM\HarnessTmp\` for the loaded Windows hive.
+    ops: Vec<String>,
+}
+
+pub struct CaseResult {
+    pub name: String,
+    pub passed: bool,
+    pub detail: String,
+}
+
+/// Run every `*.yaml` client test under `tests_dir`. `agent` is the libreg agent
+/// (used to canonicalize both result hives); `vm_host` is the Windows VM.
+pub fn run(agent: &Client, vm_host: &str, reg_bin: &Path, tests_dir: &Path) -> Vec<CaseResult> {
+    if let Err(e) = make_seed(agent) {
+        return vec![CaseResult { name: "<seed>".into(), passed: false, detail: e }];
+    }
+    let mut results = Vec::new();
+    for test in load_tests(tests_dir) {
+        results.push(run_case(agent, vm_host, reg_bin, &test));
+    }
+    results
+}
+
+fn run_case(agent: &Client, vm_host: &str, reg_bin: &Path, test: &ClientTest) -> CaseResult {
+    let fail = |detail: String| CaseResult {
+        name: test.name.clone(),
+        passed: false,
+        detail,
+    };
+    let safe = sanitize(&test.name);
+    let l_hive = format!("/tmp/client_{safe}_lin.hiv");
+    let w_local = format!("/tmp/client_{safe}_win.hiv");
+    let remote = format!("cd_{safe}.hiv");
+
+    // --- Linux side: copy the seed, run each op with our reg ---
+    if let Err(e) = std::fs::copy(SEED, &l_hive) {
+        return fail(format!("seed copy: {e}"));
+    }
+    for op in &test.ops {
+        let t = shell_split(op);
+        if t.len() < 2 {
+            return fail(format!("malformed op (need verb + key): {op:?}"));
+        }
+        let mut cmd = Command::new(reg_bin);
+        cmd.arg(&t[0]).arg(format!("HKLM\\{}", t[1]));
+        for a in &t[2..] {
+            cmd.arg(a);
+        }
+        cmd.arg("--hive").arg(&l_hive);
+        match cmd.output() {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => return fail(format!("linux `reg {op}` exit {:?}: {}", o.status.code(), String::from_utf8_lossy(&o.stderr).trim())),
+            Err(e) => return fail(format!("running our reg: {e}")),
+        }
+    }
+
+    // --- Windows side: push the seed, load/operate/unload via atexec, pull ---
+    if let Err(e) = smb_put(vm_host, SEED, &remote) {
+        return fail(format!("smb push: {e}"));
+    }
+    // Silently unload any stale mount first, then load. The ops chain with && so
+    // a failure stops the rest, but the final unload uses a single & so it ALWAYS
+    // runs (otherwise a failed op leaves HarnessTmp loaded and every later test's
+    // `reg load` hits "Access is denied").
+    let mut chain = format!(
+        "reg unload {MOUNT} >nul 2>nul & reg load {MOUNT} {WIN_SHARE_DIR}\\{remote}"
+    );
+    for op in &test.ops {
+        let t = shell_split(op);
+        chain.push_str(&format!(" && reg {} {MOUNT}\\{}", t[0], t[1]));
+        for a in &t[2..] {
+            chain.push(' ');
+            chain.push_str(&win_quote(a));
+        }
+    }
+    chain.push_str(&format!(" & reg unload {MOUNT}"));
+    let cmd = format!("cmd.exe /c \"{chain}\"");
+    if let Err(e) = vm_exec(vm_host, &cmd) {
+        let _ = smb_del(vm_host, &remote);
+        return fail(format!("vm exec: {e}"));
+    }
+    if let Err(e) = smb_get(vm_host, &remote, &w_local) {
+        return fail(format!("smb pull: {e}"));
+    }
+    let _ = smb_del(vm_host, &remote);
+
+    // --- canonicalize both result hives via the libreg agent and compare ---
+    let a = match canonicalize(agent, &l_hive) {
+        Ok(v) => v,
+        Err(e) => return fail(format!("canonicalize linux hive: {e}")),
+    };
+    let b = match canonicalize(agent, &w_local) {
+        Ok(v) => v,
+        Err(e) => return fail(format!("canonicalize windows hive: {e}")),
+    };
+    let _ = std::fs::remove_file(&l_hive);
+    let _ = std::fs::remove_file(&w_local);
+
+    let opts = SemanticOptions { ignore_timestamps: true, ignore_security: true };
+    let diffs = semantic::compare(&a, &b, &opts).diffs;
+    if diffs.is_empty() {
+        CaseResult { name: test.name.clone(), passed: true, detail: String::new() }
+    } else {
+        let summary: Vec<String> = diffs.iter().take(6).map(|d| format!("{}: {}", d.path, d.detail)).collect();
+        fail(summary.join(" | "))
+    }
+}
+
+// --- helpers ---
+
+/// Create a fresh empty hive via the libreg agent for use as the seed.
+fn make_seed(agent: &Client) -> Result<(), String> {
+    let env = agent.call("POST", "/hive/create", &json!({ "path": SEED }))?;
+    let h = handle(&env.data)?;
+    agent.call("POST", "/hive/save", &json!({ "handle": h }))?;
+    agent.call("POST", "/hive/close", &json!({ "handle": h }))?;
+    Ok(())
+}
+
+/// Load a hive file into the libreg agent and return its canonical dump.
+fn canonicalize(agent: &Client, path: &str) -> Result<Value, String> {
+    let env = agent.call("POST", "/hive/load", &json!({ "path": path }))?;
+    if !env.ok {
+        return Err(format!("load {path}: {:?}", env.error));
+    }
+    let h = handle(&env.data)?;
+    let dump = agent.call("GET", "/hive/dump", &json!({ "handle": h }))?;
+    let canon = dump.data.get("canonical_json").cloned().ok_or("dump missing canonical_json")?;
+    let _ = agent.call("POST", "/hive/close", &json!({ "handle": h }));
+    Ok(canon)
+}
+
+fn handle(data: &Value) -> Result<String, String> {
+    data.get("handle").and_then(|h| h.as_str()).map(|s| s.to_string()).ok_or_else(|| "no handle in response".to_string())
+}
+
+/// Run a command on the VM as SYSTEM via impacket atexec (task scheduler, SMB).
+fn vm_exec(host: &str, cmd: &str) -> Result<(), String> {
+    let out = Command::new("python3")
+        .arg(ATEXEC)
+        .arg(format!("{VM_ADMIN_USER}:{VM_ADMIN_PASS}@{host}"))
+        .arg(cmd)
+        .output()
+        .map_err(|e| format!("running atexec: {e}"))?;
+    let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() {
+        return Err(format!("atexec failed: {}", combined.trim()));
+    }
+    // reg.exe prints an error and the && chain stops; surface obvious failures.
+    let low = combined.to_lowercase();
+    if low.contains("access is denied") || low.contains("error:") || low.contains("the system was unable") {
+        return Err(format!("reg.exe reported an error: {}", combined.trim()));
+    }
+    Ok(())
+}
+
+fn smb_cmd(host: &str, script: &str) -> Result<(), String> {
+    let out = Command::new("smbclient")
+        .arg(format!("//{host}/winreg"))
+        .args(["-U", &format!("{VM_ADMIN_USER}%{VM_ADMIN_PASS}")])
+        .args(["-c", script])
+        .output()
+        .map_err(|e| format!("running smbclient: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(())
+}
+
+fn smb_put(host: &str, local: &str, remote: &str) -> Result<(), String> {
+    smb_cmd(host, &format!("put {local} {remote}"))
+}
+fn smb_get(host: &str, remote: &str, local: &str) -> Result<(), String> {
+    smb_cmd(host, &format!("get {remote} {local}"))
+}
+fn smb_del(host: &str, remote: &str) -> Result<(), String> {
+    smb_cmd(host, &format!("del {remote}"))
+}
+
+/// Quote a Windows command argument if it contains whitespace.
+fn win_quote(a: &str) -> String {
+    if a.chars().any(char::is_whitespace) {
+        format!("\"{a}\"")
+    } else {
+        a.to_string()
+    }
+}
+
+/// Minimal quote-aware splitter: split on unquoted whitespace, strip double
+/// quotes. Enough for `reg`/`sc` command tails.
+fn shell_split(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut inq = false;
+    let mut started = false;
+    for c in s.chars() {
+        match c {
+            '"' => {
+                inq = !inq;
+                started = true;
+            }
+            c if c.is_whitespace() && !inq => {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        out.push(cur);
+    }
+    out
+}
+
+fn sanitize(s: &str) -> String {
+    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect()
+}
+
+fn load_tests(dir: &Path) -> Vec<ClientTest> {
+    let mut tests = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return tests };
+    let mut paths: Vec<_> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| matches!(p.extension().and_then(|x| x.to_str()), Some("yaml") | Some("yml")))
+        .collect();
+    paths.sort();
+    for path in paths {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for doc in serde_yaml::Deserializer::from_str(&content) {
+                if let Ok(t) = ClientTest::deserialize(doc) {
+                    tests.push(t);
+                }
+            }
+        }
+    }
+    tests
+}

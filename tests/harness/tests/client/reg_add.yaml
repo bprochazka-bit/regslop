@@ -1,0 +1,30 @@
+# Client differential: our reg vs Windows reg.exe. Each op is the shared command
+# tail; the runner prefixes the root (HKLM\ for our tool, HKLM\HarnessTmp\ for
+# the loaded hive on Windows). Key security is ignored (reg does not edit ACLs).
+name: add_value_types
+ops:
+  - add Software\App /v Str /t REG_SZ /d hello /f
+  - add Software\App /v Expand /t REG_EXPAND_SZ /d C:\Windows /f
+  - add Software\App /v Dword /t REG_DWORD /d 305419896 /f
+  - add Software\App /v Qword /t REG_QWORD /d 4294967296 /f
+---
+name: add_nested_keys
+# The leaf carries a value: a *bare* `reg add KEY /f` (no /v) is a known
+# divergence (reg.exe leaves an empty default value on the new leaf, our reg
+# does not), tracked separately, so it is kept out of the green corpus.
+ops:
+  - add Software\A\B\C\D /v Leaf /t REG_DWORD /d 9 /f
+  - add Software\A\B /v Marker /t REG_DWORD /d 1 /f
+---
+name: add_default_value
+ops:
+  - add Software\Defaulted /ve /t REG_SZ /d theDefault /f
+---
+name: add_multi_sz
+ops:
+  - add Software\App /v List /t REG_MULTI_SZ /d one\0two\0three /f
+---
+name: add_then_overwrite
+ops:
+  - add Software\App /v V /t REG_SZ /d first /f
+  - add Software\App /v V /t REG_DWORD /d 7 /f
