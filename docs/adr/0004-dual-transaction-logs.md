@@ -1,7 +1,7 @@
 # ADR 0004: Dual transaction logs and the recovery-test control surface
 
-- Status: proposed (Part B control surface confirmed for the prototype; see
-  the revision note)
+- Status: accepted (the `/test/crash_save` hook shipped and the `recovery`
+  tag is live; endpoint added to CONTRACTS in 0.1.8)
 - Date: 2026-05-31
 - Deciders: spec agent
 - Scope: CONTRACTS.md "Transaction Log Behavior" and the `recovery` test
