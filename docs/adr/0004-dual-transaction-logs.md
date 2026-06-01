@@ -13,7 +13,7 @@
 
 The harness agent (issue #61) asked four questions to lock the `/test/crash_save`
 contract before the library agent builds it. They are answered in
-"Part B: answers to the harness" below. In short: the request/response shape
+"Part B.2: answers to the harness, confirmed" below. In short: the request/response shape
 stands as written; the three crash points and their on-disk postconditions are
 confirmed; `crash_save` writes to the hive's bound path so a later
 `/hive/load` of that path works; and an invalid `point` is a `BAD_REQUEST`
@@ -66,7 +66,7 @@ every instant there is at least one intact (log, primary) pair to recover
 from. This is the reason Windows 8.1 moved to dual logging, and it is the
 behavior v0.1 targets.
 
-### Part B: recovery-test control surface (proposed)
+### Part B.1: recovery-test control surface (rationale)
 
 Recovery is tested on the libreg side only. The oracle for a recovery test
 is the pre-crash canonical dump of the same hive, captured with a normal
@@ -106,7 +106,7 @@ to the log/primary boundary and is non-deterministic about how far the save
 got, so it cannot distinguish a complete pre-primary flush from a partial
 log write.
 
-### Part B: answers to the harness (issue #61)
+### Part B.2: answers to the harness, confirmed (issue #61)
 
 These confirm/refine the proposal so the library agent can build the hook in
 one pass. They describe the intended contract; they are still a design until
