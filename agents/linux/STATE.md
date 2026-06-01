@@ -2,33 +2,35 @@
 
 Last updated: 2026-06-01
 
-## LibregBackend: values + delete, 11/14 semantic vs offreg (latest session)
+## LibregBackend: values + delete + rename, 12/14 semantic vs offreg (latest)
 
 The `LibregBackend` (`--backend libreg`, default stays `mem`) now wraps libreg's
-`logical::Hive` for the hive lifecycle, key create/list/info/**delete**, value
-**set/get/delete**, and the canonical dump (walk the logical tree into
+`logical::Hive` for the hive lifecycle, key create/list/info/**delete/rename**,
+value **set/get/delete**, and the canonical dump (walk the logical tree into
 `model::Key`, reuse `canonical`). New `src/valuec.rs` is the JSON <-> (REG type
 code, raw bytes) codec, mirroring agents/windows/src/valuec.rs so both agents
 emit identical canonical `data` (BAD_REQUEST for an unknown type name,
 TYPE_MISMATCH for a wrong shape). libreg grew `delete_key` (with a `HasSubkeys`
-error -> KEY_HAS_CHILDREN) and `delete_value` since the first slice, so those are
-wired too. The agent enforces KEY_EXISTS at its edge (libreg's `create_key` is
-idempotent) and reports the ratified default descriptor for every key.
+error -> KEY_HAS_CHILDREN) and `delete_value`, so those are wired. `key_rename`
+is emulated agent-side (create destination, deep-copy the subtree, delete
+source), exactly as the Windows agent does, since libreg has no native rename.
+The agent enforces KEY_EXISTS at its edge (libreg's `create_key` is idempotent)
+and reports the ratified default descriptor for every key.
 
 **Live libreg-vs-offreg differential** (`--backend libreg` vs offreg on the VM):
-**semantic 11/14, structural 9/9, bytewise 2/2 (warnings), roundtrip 5/7.**
-Passing on real `regf`: lifecycle, key create/delete, all REG_* value types
-round-tripping, value overwrite/delete, the read endpoints, and the error paths.
-**bytewise compares two real regf implementations** (allocator divergence, a
-warning). The 3 remaining semantic fails are the only gaps left:
+**semantic 12/14, structural 9/9, bytewise 2/2 (warnings), roundtrip 6/7.**
+Passing on real `regf`: lifecycle, key create/delete/rename, all REG_* value
+types round-tripping, value overwrite/delete, the read endpoints, and the error
+paths. **bytewise compares two real regf implementations** (allocator
+divergence, a warning).
 
-- **key_rename** -- libreg has no rename yet (library agent). Returns INTERNAL
-  "not yet supported".
-- **set_and_get_sddl, security_get_reads** -- non-default security. libreg's
-  `key_security` returns the binary descriptor and there is no setter, and the
-  agent owns binary <-> SDDL conversion (not implemented). This is my next
-  slice; until then `security_get` returns the default descriptor, which
-  diverges once a custom SDDL is set.
+The 2 remaining semantic fails are both blocked on **non-default security**
+(`set_and_get_sddl`, `security_get_reads`): libreg's `key_security` returns the
+binary descriptor and there is no setter, and the agent owns binary <-> SDDL
+conversion (not implemented). So the next step needs the LIBRARY AGENT to add a
+security setter (`set_key_security`), after which I add binary <-> SDDL in the
+agent. Until then `security_set` is unsupported and `security_get` returns the
+default descriptor, which diverges once a custom SDDL is set.
 
 ## CONTRACTS 0.1.3 to 0.1.6 conformance (latest session)
 

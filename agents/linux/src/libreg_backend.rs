@@ -109,6 +109,24 @@ fn build_key(hive: &Hive, name: &str, path: &str) -> Result<Key> {
     Ok(key)
 }
 
+/// Copy the subtree rooted at `src` to `dst` (both full paths): create `dst`,
+/// copy its values, then recurse into each subkey. Created keys take libreg's
+/// default descriptor (this backend does not carry custom security yet, so the
+/// source keys have the default too). Used to emulate rename, which libreg has
+/// no native operation for, exactly as the Windows agent emulates it.
+fn copy_subtree(hive: &mut Hive, src: &str, dst: &str) -> Result<()> {
+    hive.create_key(dst).map_err(map_err)?;
+    for vname in hive.values(src).map_err(map_err)? {
+        if let Some((ty, bytes)) = hive.get_value(src, &vname).map_err(map_err)? {
+            hive.set_value(dst, &vname, ty, &bytes).map_err(map_err)?;
+        }
+    }
+    for sub in hive.subkeys(src).map_err(map_err)? {
+        copy_subtree(hive, &format!("{src}\\{sub}"), &format!("{dst}\\{sub}"))?;
+    }
+    Ok(())
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let out = Sha256::digest(bytes);
     let mut s = String::with_capacity(out.len() * 2);
@@ -184,9 +202,35 @@ impl Backend for LibregBackend {
         })
     }
 
-    fn key_rename(&self, _handle: &str, _path: &str, _new_name: &str) -> Result<()> {
-        // libreg has no rename yet (it would be create + subtree copy + delete).
-        Err(unsupported("key_rename"))
+    fn key_rename(&self, handle: &str, path: &str, new_name: &str) -> Result<()> {
+        if new_name.is_empty() || new_name.contains('\\') {
+            return Err(AgentError::bad_request("new_name must be a single non-empty component"));
+        }
+        self.with(handle, |e| {
+            let comps = crate::model::Key::split_path(path)?;
+            if comps.is_empty() {
+                return Err(AgentError::new(Code::AccessDenied, "cannot rename the hive root"));
+            }
+            require_key(&e.hive, path)?;
+            let (parent, leaf) = comps.split_at(comps.len() - 1);
+            let new_path = if parent.is_empty() {
+                new_name.to_string()
+            } else {
+                format!("{}\\{}", parent.join("\\"), new_name)
+            };
+            if new_name.eq_ignore_ascii_case(leaf[0]) {
+                // libreg is case-insensitive and exposes no in-place name
+                // update, so a case-only rename cannot be emulated by copy.
+                return Err(unsupported("case-only key_rename"));
+            }
+            if e.hive.resolve(&new_path).map_err(map_err)?.is_some() {
+                return Err(AgentError::key_exists(&new_path));
+            }
+            // libreg has no native rename: create the destination, deep-copy the
+            // subtree, then delete the source (CONTRACTS 0.1.2 rename semantics).
+            copy_subtree(&mut e.hive, path, &new_path)?;
+            e.hive.delete_key(path, true).map_err(map_err)
+        })
     }
 
     fn key_list(&self, handle: &str, path: &str) -> Result<Listing> {
