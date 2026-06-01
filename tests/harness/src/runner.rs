@@ -124,7 +124,7 @@ impl TestResult {
 
 // --- op metadata ---
 
-fn endpoint(op: &str) -> Option<(&'static str, &'static str)> {
+pub(crate) fn endpoint(op: &str) -> Option<(&'static str, &'static str)> {
     Some(match op {
         "hive_create" => ("POST", "/hive/create"),
         "hive_load" => ("POST", "/hive/load"),
@@ -153,7 +153,7 @@ fn ymap_str<'a>(m: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
 }
 
 /// Build the JSON request body from an op mapping, dropping control keys.
-fn build_body(opmap: &serde_yaml::Mapping) -> Value {
+pub(crate) fn build_body(opmap: &serde_yaml::Mapping) -> Value {
     let mut m = serde_yaml::Mapping::new();
     for (k, v) in opmap {
         if let Some(ks) = k.as_str() {
@@ -166,7 +166,7 @@ fn build_body(opmap: &serde_yaml::Mapping) -> Value {
     serde_json::to_value(serde_yaml::Value::Mapping(m)).unwrap_or_else(|_| json!({}))
 }
 
-fn substitute(v: &mut Value, vars: &HashMap<String, String>) {
+pub(crate) fn substitute(v: &mut Value, vars: &HashMap<String, String>) {
     match v {
         Value::String(s) if s.starts_with('$') => {
             if let Some(val) = vars.get(&s[1..]) {

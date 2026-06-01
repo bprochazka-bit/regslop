@@ -16,6 +16,7 @@ mod client;
 mod client_differ;
 mod corpus;
 mod differ;
+mod recovery;
 mod report;
 mod runner;
 mod smb;
@@ -48,6 +49,10 @@ struct Args {
     client_tests_dir: Option<PathBuf>,
     /// Path to the `reg` binary for client-differential mode.
     reg_bin: Option<PathBuf>,
+    /// Directory of recovery test YAMLs. When set, the harness drives the
+    /// crash-injection hook against the libreg agent and reports a `recovery`
+    /// pass rate.
+    recovery_tests_dir: Option<PathBuf>,
 }
 
 impl Default for Args {
@@ -67,6 +72,7 @@ impl Default for Args {
             windows_smb: false,
             client_tests_dir: None,
             reg_bin: None,
+            recovery_tests_dir: None,
         }
     }
 }
@@ -96,6 +102,7 @@ fn parse_args() -> Args {
             "--windows-smb" => a.windows_smb = true,
             "--client-tests-dir" => a.client_tests_dir = Some(PathBuf::from(next())),
             "--reg-bin" => a.reg_bin = Some(PathBuf::from(next())),
+            "--recovery-tests-dir" => a.recovery_tests_dir = Some(PathBuf::from(next())),
             "-h" | "--help" => {
                 println!(
                     "libreg-harness [--linux-host H] [--linux-port N] \\\n  \
@@ -305,6 +312,18 @@ fn main() -> ExitCode {
         if !corpus.is_empty() {
             eprintln!("Loaded {} corpus hives from {}", corpus.len(), args.corpus_dir.display());
             results.extend(corpus);
+        }
+    }
+
+    // Recovery: drive the crash-injection hook against the libreg agent. Single
+    // agent, tagged `recovery`, so honor the tag filter.
+    if let Some(dir) = &args.recovery_tests_dir {
+        if args.tag_filter.as_deref().map_or(true, |t| t == "recovery") {
+            let rec = recovery::run(&linux, dir);
+            if !rec.is_empty() {
+                eprintln!("Ran {} recovery test(s) from {}", rec.len(), dir.display());
+                results.extend(rec);
+            }
         }
     }
 
