@@ -14,15 +14,13 @@
 use super::key;
 use super::LogicalError;
 use crate::alloc::HiveImage;
+use crate::format::db::{BigData, DB_MAX_SEGMENT};
 use crate::format::nk::{KeyNode, OFFSET_NONE};
 use crate::format::vk::{ValueKey, VALUE_COMP_NAME, VK_INLINE_MAX};
 
-/// Largest value data stored in a single plain data cell. Larger values need
-/// a big-data (db) cell, which is step 9.
-const MAX_PLAIN_DATA: usize = 16344;
-
 /// Set the value `name` of the key at `key_off` to `data` with type
-/// `data_type`, creating it or replacing an existing value of that name.
+/// `data_type`, creating it or replacing an existing value of that name. Data
+/// over [`DB_MAX_SEGMENT`] bytes is stored as a big-data (db) cell.
 pub fn set(
     image: &mut HiveImage,
     key_off: u32,
@@ -30,12 +28,6 @@ pub fn set(
     data_type: u32,
     data: &[u8],
 ) -> Result<(), LogicalError> {
-    if data.len() > MAX_PLAIN_DATA {
-        return Err(LogicalError::Unsupported(
-            "value data over 16344 bytes needs a db cell (step 9)",
-        ));
-    }
-
     let mut nk = key::read_nk(image, key_off)?;
     let mut offsets = read_value_offsets(image, nk.values_list_offset, nk.value_count)?;
 
@@ -54,12 +46,10 @@ pub fn set(
 
     match existing {
         Some((old_vk, vk_off)) => {
-            // Release the old out-of-line data cell, if any. The name is
+            // Release the old data cells (plain or db), if any. The name is
             // unchanged, so the vk payload is the same size and rewrites in
             // place; only the data words change.
-            if !old_vk.is_inline() && old_vk.data_len() > 0 {
-                image.free(old_vk.data_offset);
-            }
+            free_value_data(image, &old_vk)?;
             write_payload_inplace(image, vk_off, &new_vk.to_payload());
         }
         None => {
@@ -93,7 +83,7 @@ pub fn get(
     for vk_off in read_value_offsets(image, nk.values_list_offset, nk.value_count)? {
         let vk = ValueKey::parse(image.content(vk_off))?;
         if name_matches(name, &vk) {
-            let data = read_data(image, &vk);
+            let data = read_data(image, &vk)?;
             return Ok(Some((vk.data_type, data)));
         }
     }
@@ -160,18 +150,55 @@ pub(super) fn free_all(image: &mut HiveImage, nk: &KeyNode) -> Result<(), Logica
     Ok(())
 }
 
-/// Free a vk cell and its out-of-line data cell (inline data needs no cell).
+/// Free a vk cell and its out-of-line data (a plain data cell, or a db cell
+/// with its segment list and segment cells).
 fn free_value_cell(image: &mut HiveImage, vk_off: u32) -> Result<(), LogicalError> {
     let vk = ValueKey::parse(image.content(vk_off))?;
-    if !vk.is_inline() && vk.data_len() > 0 {
-        image.free(vk.data_offset);
-    }
+    free_value_data(image, &vk)?;
     image.free(vk_off);
     Ok(())
 }
 
-/// Build a vk for `data`: inline when it fits in 4 bytes, otherwise a
-/// pointer to a freshly allocated data cell.
+/// Free the out-of-line data cells of `vk` (nothing for inline or empty data).
+fn free_value_data(image: &mut HiveImage, vk: &ValueKey) -> Result<(), LogicalError> {
+    if vk.is_inline() || vk.data_len() == 0 {
+        return Ok(());
+    }
+    if vk.data_len() as usize <= DB_MAX_SEGMENT {
+        image.free(vk.data_offset);
+    } else {
+        free_big_data(image, vk.data_offset)?;
+    }
+    Ok(())
+}
+
+/// Free a db cell, its segment-list cell, and every segment data cell.
+fn free_big_data(image: &mut HiveImage, db_off: u32) -> Result<(), LogicalError> {
+    let db = BigData::parse(image.content(db_off))?;
+    let seg_offsets = read_offset_array(image, db.segment_list_offset, db.segment_count as usize);
+    for seg_off in seg_offsets {
+        image.free(seg_off);
+    }
+    image.free(db.segment_list_offset);
+    image.free(db_off);
+    Ok(())
+}
+
+/// Read a packed array of `count` u32 offsets from the cell at `list_offset`.
+fn read_offset_array(image: &HiveImage, list_offset: u32, count: usize) -> Vec<u32> {
+    let content = image.content(list_offset);
+    (0..count)
+        .map(|i| {
+            let b: [u8; 4] = content[i * 4..i * 4 + 4]
+                .try_into()
+                .expect("offset array slice is 4 bytes");
+            u32::from_le_bytes(b)
+        })
+        .collect()
+}
+
+/// Build a vk for `data`: inline (<= 4 bytes), a single plain data cell
+/// (<= [`DB_MAX_SEGMENT`]), or a db cell with split segments (larger).
 fn build_vk(
     image: &mut HiveImage,
     name: Vec<u8>,
@@ -179,23 +206,69 @@ fn build_vk(
     data_type: u32,
     data: &[u8],
 ) -> ValueKey {
-    if data.len() <= VK_INLINE_MAX {
-        ValueKey::new_inline(name, flags, data_type, data)
+    let data_off = if data.len() <= VK_INLINE_MAX {
+        return ValueKey::new_inline(name, flags, data_type, data);
+    } else if data.len() <= DB_MAX_SEGMENT {
+        let off = image.alloc(data.len());
+        image.content_mut(off)[..data.len()].copy_from_slice(data);
+        off
     } else {
-        let data_off = image.alloc(data.len());
-        image.content_mut(data_off)[..data.len()].copy_from_slice(data);
-        ValueKey::new_pointer(name, flags, data_type, data.len() as u32, data_off)
-    }
+        write_big_data(image, data)
+    };
+    ValueKey::new_pointer(name, flags, data_type, data.len() as u32, data_off)
 }
 
-/// Read a value's data, whether inline or in a separate cell.
-fn read_data(image: &HiveImage, vk: &ValueKey) -> Vec<u8> {
-    if vk.is_inline() {
-        vk.inline_data()
-    } else {
-        let len = vk.data_len() as usize;
-        image.content(vk.data_offset)[..len].to_vec()
+/// Split `data` into [`DB_MAX_SEGMENT`]-byte segment cells, write a
+/// segment-list cell of their offsets, and a db cell pointing at it. Returns
+/// the db cell offset (what the vk points to).
+fn write_big_data(image: &mut HiveImage, data: &[u8]) -> u32 {
+    let mut seg_offsets = Vec::new();
+    for chunk in data.chunks(DB_MAX_SEGMENT) {
+        let off = image.alloc(chunk.len());
+        image.content_mut(off)[..chunk.len()].copy_from_slice(chunk);
+        seg_offsets.push(off);
     }
+
+    let list_off = image.alloc(seg_offsets.len() * 4);
+    {
+        let content = image.content_mut(list_off);
+        for (i, off) in seg_offsets.iter().enumerate() {
+            content[i * 4..i * 4 + 4].copy_from_slice(&off.to_le_bytes());
+        }
+    }
+
+    let db = BigData {
+        segment_count: seg_offsets.len() as u16,
+        segment_list_offset: list_off,
+    };
+    let payload = db.to_payload();
+    let db_off = image.alloc(payload.len());
+    image.content_mut(db_off)[..payload.len()].copy_from_slice(&payload);
+    db_off
+}
+
+/// Read a value's data: inline, a single plain data cell, or a db cell's
+/// reassembled segments.
+fn read_data(image: &HiveImage, vk: &ValueKey) -> Result<Vec<u8>, LogicalError> {
+    if vk.is_inline() {
+        return Ok(vk.inline_data());
+    }
+    let len = vk.data_len() as usize;
+    if len <= DB_MAX_SEGMENT {
+        return Ok(image.content(vk.data_offset)[..len].to_vec());
+    }
+
+    // Big data: concatenate the segments up to the total length.
+    let db = BigData::parse(image.content(vk.data_offset))?;
+    let seg_offsets = read_offset_array(image, db.segment_list_offset, db.segment_count as usize);
+    let mut out = Vec::with_capacity(len);
+    let mut remaining = len;
+    for seg_off in seg_offsets {
+        let take = remaining.min(DB_MAX_SEGMENT);
+        out.extend_from_slice(&image.content(seg_off)[..take]);
+        remaining -= take;
+    }
+    Ok(out)
 }
 
 /// Read the value list (array of u32 vk offsets) of a key.

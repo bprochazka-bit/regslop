@@ -7,10 +7,11 @@
 //! checks (each created key appears under its parent, siblings stay
 //! name-sorted, security cells stay a consistent ring with exact refcounts).
 //!
-//! What works so far: key creation (single keys and full paths, creating any
-//! missing intermediates), case-insensitive lookup, and subkey enumeration.
-//! Values (step 5), deletion (step 7), lh to ri promotion (step 8), and sk
-//! sharing (step 10) are not implemented yet.
+//! What works: key create/delete (single keys and full paths, recursive
+//! delete), case-insensitive lookup, subkey enumeration across all list forms
+//! with lh->ri promotion, value set/get/delete (inline, plain, and big-data db
+//! cells), and descriptor-shared sk cells with refcounting. Transaction logs
+//! (step 11) are the main piece not yet implemented.
 
 pub mod index;
 pub mod key;
@@ -280,6 +281,7 @@ mod tests {
     use crate::format::hbin::walk;
     use crate::format::lh::{name_hash, HashLeaf};
     use crate::format::sk::SecurityCell;
+    use crate::format::vk::ValueKey;
     use std::collections::{BTreeMap, BTreeSet};
 
     /// Deterministic SplitMix64, matching the allocator/base_block tests.
@@ -770,5 +772,117 @@ mod tests {
             hive.to_file()
         }
         assert_eq!(build(), build(), "Hard Rule 5 across deletes");
+    }
+
+    /// Deterministic test blob of `n` bytes.
+    fn blob(n: usize) -> Vec<u8> {
+        (0..n).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// Parse the vk of the first value of the key at `path`.
+    fn first_value_vk(hive: &Hive, path: &str) -> ValueKey {
+        let off = hive.resolve(path).unwrap().unwrap();
+        let nk = key::read_nk(hive.image(), off).unwrap();
+        let list = hive.image().content(nk.values_list_offset);
+        let vk_off = u32::from_le_bytes([list[0], list[1], list[2], list[3]]);
+        ValueKey::parse(hive.image().content(vk_off)).unwrap()
+    }
+
+    #[test]
+    fn big_value_round_trips_through_a_db_cell() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+        let data = blob(100_000);
+        hive.set_value("K", "blob", REG_BINARY, &data).unwrap();
+
+        // Read back identical.
+        assert_eq!(
+            hive.get_value("K", "blob").unwrap().unwrap(),
+            (REG_BINARY, data.clone())
+        );
+
+        // It is actually stored as a db cell (not one giant plain cell).
+        let vk = first_value_vk(&hive, "K");
+        assert!(!vk.is_inline());
+        assert_eq!(vk.data_len() as usize, 100_000);
+        assert_eq!(
+            &hive.image().content(vk.data_offset)[0..2],
+            b"db",
+            "data offset points at a db cell"
+        );
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn db_boundary_is_16344() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+
+        // 16344 bytes: a single plain data cell (no db).
+        hive.set_value("K", "edge", REG_BINARY, &blob(16344))
+            .unwrap();
+        assert_eq!(hive.get_value("K", "edge").unwrap().unwrap().1, blob(16344));
+        assert_ne!(
+            &hive.image().content(first_value_vk(&hive, "K").data_offset)[0..2],
+            b"db",
+            "16344 stays a plain data cell"
+        );
+
+        // 16345 bytes: promotes to a db cell.
+        hive.set_value("K", "edge", REG_BINARY, &blob(16345))
+            .unwrap();
+        assert_eq!(hive.get_value("K", "edge").unwrap().unwrap().1, blob(16345));
+        assert_eq!(
+            &hive.image().content(first_value_vk(&hive, "K").data_offset)[0..2],
+            b"db",
+            "16345 needs a db cell"
+        );
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn big_value_survives_save_and_reload() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+        let data = blob(70_000);
+        hive.set_value("K", "v", REG_BINARY, &data).unwrap();
+
+        let reloaded = Hive::from_file_bytes(&hive.to_file()).unwrap();
+        assert_eq!(
+            reloaded.get_value("K", "v").unwrap().unwrap(),
+            (REG_BINARY, data)
+        );
+    }
+
+    #[test]
+    fn deleting_big_value_reclaims_all_segments() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+        let before = walk(hive.image().bins()).unwrap().allocated_cells;
+        hive.set_value("K", "v", REG_BINARY, &blob(100_000))
+            .unwrap();
+        hive.delete_value("K", "v").unwrap();
+        // The db cell, segment list, and every segment cell are freed.
+        assert_eq!(walk(hive.image().bins()).unwrap().allocated_cells, before);
+        assert_loadable(&hive);
+    }
+
+    #[test]
+    fn replacing_big_value_with_small_frees_segments() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+        hive.set_value("K", "v", REG_BINARY, &blob(100_000))
+            .unwrap();
+        // Replace with inline data; the old db structure must be released.
+        hive.set_value("K", "v", REG_DWORD, &1u32.to_le_bytes())
+            .unwrap();
+        assert_eq!(
+            hive.get_value("K", "v").unwrap().unwrap(),
+            (REG_DWORD, 1u32.to_le_bytes().to_vec())
+        );
+        // And back to big again still round-trips.
+        hive.set_value("K", "v", REG_BINARY, &blob(40_000)).unwrap();
+        assert_eq!(hive.get_value("K", "v").unwrap().unwrap().1, blob(40_000));
+        assert_loadable(&hive);
     }
 }

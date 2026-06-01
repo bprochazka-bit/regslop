@@ -2,27 +2,36 @@
 
 Last updated: 2026-05-31 (library agent)
 
-Merge state: steps 1-6 and 8 plus the offreg-alignment pass are on main
-(allocator #27, key create #33, value set #37, offreg-align #41, step 6 read
-#44, step 8 ri-promote #45, all MERGED). THIS session (branch
-`agent/library-delete-keys` off main) implements step 7: key/value DELETE with
-cell reclamation. With this, create/delete round-trips and the library covers
-the core mutation surface (create/set/delete for keys and values).
+Merge state: steps 1-8 plus the offreg-alignment pass are on main (allocator
+#27, key create #33, value set #37, offreg-align #41, step 6 read #44, step 8
+ri-promote #45, step 7 delete #47, all MERGED). THIS session (branch
+`agent/library-bigdata` off main) implements step 9: big-data (db) cells, so
+values larger than 16344 bytes can be stored. After this, steps 1-9 are done;
+only step 11 (transaction logs) and the bytewise-parity polish remain.
 
-STEP 7 (this session): delete frees cells and decrements the shared sk.
-- `Hive::delete_value(path, name)` frees the vk and its out-of-line data cell,
-  rebuilds the value list (dropping it when empty). Returns whether it existed.
-- `Hive::delete_key(path, recursive)` detaches the key from its parent
-  (`index::remove_subkey` rebuilds the parent list, demoting ri->lh->none as
-  the count falls), then `free_subtree` frees the key and all descendants
-  post-order: subkey lists (and ri leaves), value lists + vks + data cells,
-  the nk, and one sk reference via `security::release_sk` (decrement; unlink +
-  free at 0). Non-recursive delete of a key with subkeys returns
-  `LogicalError::HasSubkeys`; the root key cannot be deleted.
-- Verified: after deleting all keys/values the allocated-cell count returns to
-  the empty hive's (root nk + root sk), the shared sk refcount drops back to
-  1, walk stays green, and delete is byte-deterministic. Delete-then-recreate
-  reuses the reclaimed space. New tests live in `src/logical/mod.rs`.
+STEP 9 (this session): values over 16344 bytes use a db cell.
+- `format/db.rs` (Layer 0): the db record (signature, segment count, segment-
+  list offset) parse/serialize, plus `DB_MAX_SEGMENT = 16344` (the per-segment
+  cap and the plain-vs-db threshold) and `segment_count_for`.
+- `logical/value.rs`: `build_vk` now picks inline (<=4 bytes), a single plain
+  data cell (<=16344), or a db cell (larger). `write_big_data` splits data into
+  16344-byte segment cells, writes a segment-list cell of their offsets, and a
+  db cell pointing at it; the vk's data_size is the total length (read uses
+  data_size > 16344 to detect a db). `read_data` reassembles the segments.
+  `free_value_data`/`free_big_data` free the db + segment list + segment cells
+  on delete or replace. The old "Unsupported over 16344" guard is gone.
+- Verified (src/logical/mod.rs tests): a 100KB value round-trips (and is
+  actually stored as a db cell); the 16344/16345 boundary picks plain vs db;
+  big values survive save+reload; deleting or replacing a big value reclaims
+  the db, segment list, and every segment cell (allocated-cell count returns to
+  baseline). vk/db format round-trips in format/db.rs.
+
+CAVEAT: there is NO db reference hive in tests/corpus/synthetic, so the db
+LAYOUT (16344 segment size, the segment-list cell, the db record fields)
+follows the docs (Suhanov) and is NOT confirmed byte-for-byte against offreg.
+The libreg round trip is verified; whether offreg can LOAD a libreg db hive is
+not. Next step: request a 100KB-value reference hive from the corpus/harness
+to confirm (and to answer it the way ref_ri.hiv answered ri promotion).
 
 PERF/NOTE: the rebuild is O(n) per insert (O(n^2) to build n subkeys),
 because each insert re-reads every sibling's name (leaves store hashes, not
@@ -285,7 +294,7 @@ a Layer 2 (logical) concern. These are pure parsers/serializers, fully
 verifiable offline; they do NOT yet decide which list type a create emits
 (that is the step 4 logical decision, harness-gated).
 
-Tests (all 106 lib + corpus/integration green: base/hbin, offreg-compare,
+Tests (all 116 lib + corpus/integration green: base/hbin, offreg-compare,
 enumerate, promote-ri; `cargo test`, clippy clean; new files
 fmt clean. NOTE: pre-existing fmt drift exists in several `format/*.rs` and
 `tests/hbin_walk_corpus.rs` from earlier merges; left untouched per the
@@ -392,6 +401,13 @@ every `format/*.rs`; pass only the files you changed, or revert the rest.):
   `recursive_delete_removes_the_whole_subtree`, `cannot_delete_root`,
   `delete_decrements_shared_sk_refcount`, `delete_then_recreate`, and
   `delete_is_byte_deterministic`.
+- `src/format/db.rs` (step 9): `round_trips`, `round_trips_through_a_cell`,
+  `rejects_bad_signature`, `rejects_short_header`,
+  `segment_count_matches_threshold`.
+- `src/logical/mod.rs` (big data, step 9): `big_value_round_trips_through_a_db_cell`
+  (100KB, stored as db), `db_boundary_is_16344` (plain at 16344, db at 16345),
+  `big_value_survives_save_and_reload`, `deleting_big_value_reclaims_all_segments`,
+  `replacing_big_value_with_small_frees_segments`.
 
 ## Step 3/4/5 verification against offreg references (this session)
 
@@ -447,8 +463,9 @@ now strong (byte-identical empty-hive prefix and descriptor, matching tree).
   round-trips: deleting everything returns the allocated-cell count to the
   empty hive's. No orphan cells (verified by allocated-count + walk; a full
   reachability audit is not run, but the post-order free leaves none).
-- db format module (step 9) not written; values over 16344 bytes return
-  Unsupported. All other cell types (nk/vk/sk/lf/lh/li/ri) exist.
+- db big-data (step 9) DONE this session: values over 16344 bytes split into
+  db segments. All cell types (nk/vk/sk/lf/lh/li/ri/db) now exist. CAVEAT: db
+  layout is unverified against offreg (no db reference hive yet).
 - Allocator is a content-agnostic substrate only: it does not update nk
   link fields, refcounts, or counts. That bookkeeping is Layer 2's job.
 - Allocator does not yet free into a size-bucketed list; first-fit scans
@@ -512,16 +529,16 @@ now strong (byte-identical empty-hive prefix and descriptor, matching tree).
 ## What I would do next session
 
 1. GET THE HARNESS to drive `Hive` and confirm `semantic` green for steps
-   3/4/5. Build a `Hive`, create keys/values, `to_file()`, hand the bytes to
-   the Windows agent via offreg. Coordinate with the harness/linux-agent devs
-   on wiring `Hive` into `agents/linux` (their subtree). The offline evidence
-   is now strong (byte-identical empty-hive prefix + descriptor, matching
-   tree vs the offreg references), so this should pass.
-2. Steps 6/7/8 DONE; the core mutation surface (create/set/delete for keys
-   and values) is complete. Remaining numbered steps: 9 (db big-data cells
-   for values over 16344 bytes) and 11 (transaction logs / dual-log recovery).
-   Step 9 is self-contained Layer 0 + a value.rs branch; a good next pick.
-3. Bytewise parity polish (lower priority, all bytewise-only): match offreg's
+   3-9. The linux agent now has a libreg backend (PR #48 on main), so this is
+   close: build a `Hive`, create keys/values, `to_file()`, load via offreg in
+   the Windows agent, diff canonical form. This is what formally CLOSES the
+   steps libreg has implemented offline.
+2. Get a db reference hive (a value >= ~100KB) into tests/corpus/synthetic to
+   confirm libreg's db layout is offreg-loadable, the way ref_ri.hiv confirmed
+   ri promotion. Until then step 9 is offline-verified only.
+3. Step 11 (transaction logs / dual-log recovery) is the last unstarted step.
+   Steps 1-9 are now implemented (10's create-side sk sharing is done).
+4. Bytewise parity polish (lower priority, all bytewise-only): match offreg's
    allocation order (lh before child nk), the non-ASCII lh hash (full Unicode
    upcase, issue #22). The `dump_hive`/`make_key_hive` examples make this easy
    to check against the references.
