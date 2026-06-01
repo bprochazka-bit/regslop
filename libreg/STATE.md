@@ -7,25 +7,28 @@ are on main (allocator #27, key create #33, value set #37, offreg-align #41,
 step 6 read #44, step 8 ri-promote #45, step 7 delete #47, step 9 big-data
 #53, set_key_security #57, all MERGED). The core mutation surface is complete.
 
-THIS session (branch `agent/library-load-robustness` off main): LOAD-PATH
-HARDENING + validation, prompted by reading the linux agent's libreg_backend.
-- `from_file_bytes` used to slice `file[BASE_BLOCK_SIZE..end]` where `end`
-  comes from the hive's own (corruption-controlled) `hbins_size` field, so a
-  truncated/malformed hive PANICKED. Now it bounds-checks `end` and verifies
-  the root cell frames a valid nk (bounds-safe `Cell::parse_at`), returning a
-  `Format` error instead. This protects the agent's hive_load and the fuzz/
-  corpus tags.
-- `Hive::validate() -> Vec<String>` (empty = valid): the offline structural
-  check behind `GET /hive/validate` (the agent currently stubs it). Walks the
-  cells (invariants 5/6/9/10) and checks the root nk.
-- Tests: truncated and bogus-root hives are rejected (not panic); a real hive
-  round-trips; validate passes for valid hives and flags a hive whose sk cell
-  size is zeroed (loads but fails the walk).
-- NOTE: this does not make EVERY operation panic-proof on arbitrary malformed
-  interiors (a walk-clean hive can still hold a bogus interior offset that
-  `image.content` would index out of bounds). Full panic-safety would mean
-  bounds-checking `HiveImage::content`; deferred. The common corruptions
-  (truncation, bad root) are now safe.
+THIS session (branch `agent/library-content-safety` off main): completed the
+PANIC-SAFETY work begun in #59. Every operation on a loaded hive now returns
+an error instead of panicking, even when an interior offset (a child offset, a
+value/sk/list/data offset) points anywhere.
+- Added `HiveImage::try_content(offset) -> Result<&[u8], FormatError>`, a
+  bounds-checked sibling of `content` (which stays for create-path offsets the
+  allocator just produced). Switched every loaded-data read to it: `read_nk`,
+  `read_sk`, vk/lh/li/ri/db parses, value/segment data, and the u32 offset
+  arrays (now length-checked). The read helpers already returned `Result`, so
+  no signatures changed.
+- Tests: a hive whose root nk's subkeys_list_offset (and another whose
+  security_offset) points off the end LOADS (the root nk still parses), and the
+  operation that dereferences it returns `Format` rather than panicking.
+- Combined with #59, libreg no longer panics on any loaded bytes. (The
+  create/write path still uses the panicking `content`/`content_mut`, which is
+  correct: those offsets come from `alloc`.)
+
+----- #59 load-path hardening (now merged); step 9 + earlier below -----
+
+#59: `from_file_bytes` bounds-checks the bins slice and the root cell;
+`Hive::validate() -> Vec<String>` is the offline structural check behind
+`GET /hive/validate`.
 
 ----- step 9 (big-data) section below; earlier sessions further down -----
 

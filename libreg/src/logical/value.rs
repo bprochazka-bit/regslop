@@ -2,9 +2,10 @@
 //!
 //! A key's values are indexed by a value-list cell: a raw array of u32 vk
 //! offsets, sized by the nk "value count" (docs/hive-format.md 3.5). Each vk
-//! either stores its data inline (4 bytes or fewer) or points at a plain
-//! data cell. Big-data (db) cells for values over 16344 bytes are step 9 and
-//! not handled here.
+//! stores its data inline (4 bytes or fewer), in a single plain data cell
+//! (up to 16344 bytes), or in a big-data (db) cell split into segments
+//! (larger). Reads of cell offsets are bounds-checked via `try_content`, so a
+//! corrupt hive errors rather than panicking.
 //!
 //! These are free functions over the allocator image, given a key's nk
 //! offset; `Hive` resolves the path and calls in. Data is opaque to libreg:
@@ -17,6 +18,7 @@ use crate::alloc::HiveImage;
 use crate::format::db::{BigData, DB_MAX_SEGMENT};
 use crate::format::nk::{KeyNode, OFFSET_NONE};
 use crate::format::vk::{ValueKey, VALUE_COMP_NAME, VK_INLINE_MAX};
+use crate::format::FormatError;
 
 /// Set the value `name` of the key at `key_off` to `data` with type
 /// `data_type`, creating it or replacing an existing value of that name. Data
@@ -34,7 +36,7 @@ pub fn set(
     // Is there already a value of this name?
     let mut existing: Option<(ValueKey, u32)> = None;
     for &vk_off in &offsets {
-        let vk = ValueKey::parse(image.content(vk_off))?;
+        let vk = ValueKey::parse(image.try_content(vk_off)?)?;
         if name_matches(name, &vk) {
             existing = Some((vk, vk_off));
             break;
@@ -81,7 +83,7 @@ pub fn get(
 ) -> Result<Option<(u32, Vec<u8>)>, LogicalError> {
     let nk = key::read_nk(image, key_off)?;
     for vk_off in read_value_offsets(image, nk.values_list_offset, nk.value_count)? {
-        let vk = ValueKey::parse(image.content(vk_off))?;
+        let vk = ValueKey::parse(image.try_content(vk_off)?)?;
         if name_matches(name, &vk) {
             let data = read_data(image, &vk)?;
             return Ok(Some((vk.data_type, data)));
@@ -95,7 +97,7 @@ pub fn list_names(image: &HiveImage, key_off: u32) -> Result<Vec<String>, Logica
     let nk = key::read_nk(image, key_off)?;
     let mut out = Vec::new();
     for vk_off in read_value_offsets(image, nk.values_list_offset, nk.value_count)? {
-        let vk = ValueKey::parse(image.content(vk_off))?;
+        let vk = ValueKey::parse(image.try_content(vk_off)?)?;
         out.push(decode_value_name(&vk));
     }
     Ok(out)
@@ -110,7 +112,7 @@ pub fn delete(image: &mut HiveImage, key_off: u32, name: &str) -> Result<bool, L
 
     let mut found = None;
     for (i, &vk_off) in offsets.iter().enumerate() {
-        let vk = ValueKey::parse(image.content(vk_off))?;
+        let vk = ValueKey::parse(image.try_content(vk_off)?)?;
         if name_matches(name, &vk) {
             found = Some(i);
             break;
@@ -153,7 +155,7 @@ pub(super) fn free_all(image: &mut HiveImage, nk: &KeyNode) -> Result<(), Logica
 /// Free a vk cell and its out-of-line data (a plain data cell, or a db cell
 /// with its segment list and segment cells).
 fn free_value_cell(image: &mut HiveImage, vk_off: u32) -> Result<(), LogicalError> {
-    let vk = ValueKey::parse(image.content(vk_off))?;
+    let vk = ValueKey::parse(image.try_content(vk_off)?)?;
     free_value_data(image, &vk)?;
     image.free(vk_off);
     Ok(())
@@ -174,8 +176,8 @@ fn free_value_data(image: &mut HiveImage, vk: &ValueKey) -> Result<(), LogicalEr
 
 /// Free a db cell, its segment-list cell, and every segment data cell.
 fn free_big_data(image: &mut HiveImage, db_off: u32) -> Result<(), LogicalError> {
-    let db = BigData::parse(image.content(db_off))?;
-    let seg_offsets = read_offset_array(image, db.segment_list_offset, db.segment_count as usize);
+    let db = BigData::parse(image.try_content(db_off)?)?;
+    let seg_offsets = read_offset_array(image, db.segment_list_offset, db.segment_count as usize)?;
     for seg_off in seg_offsets {
         image.free(seg_off);
     }
@@ -184,17 +186,32 @@ fn free_big_data(image: &mut HiveImage, db_off: u32) -> Result<(), LogicalError>
     Ok(())
 }
 
-/// Read a packed array of `count` u32 offsets from the cell at `list_offset`.
-fn read_offset_array(image: &HiveImage, list_offset: u32, count: usize) -> Vec<u32> {
-    let content = image.content(list_offset);
-    (0..count)
+/// Read a packed array of `count` u32 offsets from the cell at `list_offset`,
+/// bounds-checked against the cell length.
+fn read_offset_array(
+    image: &HiveImage,
+    list_offset: u32,
+    count: usize,
+) -> Result<Vec<u32>, LogicalError> {
+    let content = image.try_content(list_offset)?;
+    if content.len() < count * 4 {
+        return Err(LogicalError::Format(FormatError::OutOfBounds {
+            structure: "offset array",
+            offset: list_offset as usize,
+            need: count * 4,
+            available: content.len(),
+        }));
+    }
+    Ok((0..count)
         .map(|i| {
-            let b: [u8; 4] = content[i * 4..i * 4 + 4]
-                .try_into()
-                .expect("offset array slice is 4 bytes");
-            u32::from_le_bytes(b)
+            u32::from_le_bytes([
+                content[i * 4],
+                content[i * 4 + 1],
+                content[i * 4 + 2],
+                content[i * 4 + 3],
+            ])
         })
-        .collect()
+        .collect())
 }
 
 /// Build a vk for `data`: inline (<= 4 bytes), a single plain data cell
@@ -255,20 +272,38 @@ fn read_data(image: &HiveImage, vk: &ValueKey) -> Result<Vec<u8>, LogicalError> 
     }
     let len = vk.data_len() as usize;
     if len <= DB_MAX_SEGMENT {
-        return Ok(image.content(vk.data_offset)[..len].to_vec());
+        return slice_prefix(image.try_content(vk.data_offset)?, len, "value data");
     }
 
     // Big data: concatenate the segments up to the total length.
-    let db = BigData::parse(image.content(vk.data_offset))?;
-    let seg_offsets = read_offset_array(image, db.segment_list_offset, db.segment_count as usize);
+    let db = BigData::parse(image.try_content(vk.data_offset)?)?;
+    let seg_offsets = read_offset_array(image, db.segment_list_offset, db.segment_count as usize)?;
     let mut out = Vec::with_capacity(len);
     let mut remaining = len;
     for seg_off in seg_offsets {
         let take = remaining.min(DB_MAX_SEGMENT);
-        out.extend_from_slice(&image.content(seg_off)[..take]);
+        out.extend_from_slice(&slice_prefix(
+            image.try_content(seg_off)?,
+            take,
+            "db segment",
+        )?);
         remaining -= take;
     }
     Ok(out)
+}
+
+/// The first `len` bytes of `content` as an owned vec, or an error when the
+/// cell is too short (a corrupt data/segment cell).
+fn slice_prefix(content: &[u8], len: usize, what: &'static str) -> Result<Vec<u8>, LogicalError> {
+    match content.get(..len) {
+        Some(prefix) => Ok(prefix.to_vec()),
+        None => Err(LogicalError::Format(FormatError::OutOfBounds {
+            structure: what,
+            offset: 0,
+            need: len,
+            available: content.len(),
+        })),
+    }
 }
 
 /// Read the value list (array of u32 vk offsets) of a key.
@@ -280,15 +315,7 @@ fn read_value_offsets(
     if list_offset == OFFSET_NONE || count == 0 {
         return Ok(Vec::new());
     }
-    let content = image.content(list_offset);
-    let mut out = Vec::with_capacity(count as usize);
-    for i in 0..count as usize {
-        let b: [u8; 4] = content[i * 4..i * 4 + 4]
-            .try_into()
-            .expect("value list slice is 4 bytes");
-        out.push(u32::from_le_bytes(b));
-    }
-    Ok(out)
+    read_offset_array(image, list_offset, count as usize)
 }
 
 /// Allocate and write a value-list cell holding `offsets`, returning its

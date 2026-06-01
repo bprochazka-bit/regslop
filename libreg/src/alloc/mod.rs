@@ -17,9 +17,9 @@ pub mod free_list;
 pub mod hbin_grow;
 
 use crate::format::base_block::{BaseBlock, BASE_BLOCK_SIZE};
-use crate::format::cell::cell_size_for;
+use crate::format::cell::{cell_size_for, Cell};
 use crate::format::hbin::{HBIN_ALIGN, HBIN_HEADER_SIZE};
-use crate::format::read_i32;
+use crate::format::{read_i32, FormatError};
 
 /// An in-memory hive image that the allocator manages.
 ///
@@ -69,10 +69,21 @@ impl HiveImage {
         free_list::free(&mut self.bins, offset as usize);
     }
 
-    /// Borrow the content bytes of the allocated cell at `offset`.
+    /// Borrow the content bytes of the allocated cell at `offset`. Panics if
+    /// `offset` does not frame a cell in bounds; use this only with offsets the
+    /// allocator just produced. For offsets read out of a loaded (possibly
+    /// corrupt) hive, use [`try_content`](Self::try_content).
     pub fn content(&self, offset: u32) -> &[u8] {
         let (start, end) = self.content_range(offset);
         &self.bins[start..end]
+    }
+
+    /// Bounds-checked [`content`](Self::content): returns the cell content at
+    /// `offset`, or a `FormatError` when the offset does not frame a cell
+    /// within the bins. Use this for any offset read out of cell data, where a
+    /// corrupt hive could point anywhere.
+    pub fn try_content(&self, offset: u32) -> Result<&[u8], FormatError> {
+        Ok(Cell::parse_at(&self.bins, offset as usize)?.data)
     }
 
     /// Mutably borrow the content bytes of the allocated cell at `offset`.
