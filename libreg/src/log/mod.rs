@@ -64,7 +64,14 @@ pub fn log_slot_for(generation: u32) -> Slot {
 /// Each entry is `(slot, bytes)`; a caller (the agent's `/test/crash_save`, or
 /// a test) executes them in order against the hive's files. A normal save is
 /// `crash_save_plan(hive, AfterPrimary)`.
-pub fn crash_save_plan(hive: &Hive, point: CrashPoint) -> Vec<(Slot, Vec<u8>)> {
+///
+/// A completed save ([`CrashPoint::AfterPrimary`]) advances `hive`'s committed
+/// generation, so a subsequent save on the same in-memory handle produces a
+/// strictly newer generation (the harness keeps the same handle across the
+/// baseline `hive_save` and the `crash_save`, issue #61). The pre-primary
+/// points do NOT advance it: the save did not commit, and the handle is
+/// discarded after a simulated crash anyway.
+pub fn crash_save_plan(hive: &mut Hive, point: CrashPoint) -> Vec<(Slot, Vec<u8>)> {
     let new_generation = hive.generation() + 1;
     let snapshot = hive.snapshot(new_generation);
     let slot = log_slot_for(new_generation);
@@ -76,6 +83,7 @@ pub fn crash_save_plan(hive: &Hive, point: CrashPoint) -> Vec<(Slot, Vec<u8>)> {
     // pre-primary points stop after the journal.
     if point == CrashPoint::AfterPrimary {
         plan.push((Slot::Primary, snapshot));
+        hive.set_generation(new_generation);
     }
     plan
 }
@@ -146,32 +154,28 @@ mod tests {
         }
     }
 
-    /// Save the baseline as generation 1 (a full save), so a log of the
-    /// previous generation exists on disk before the crash.
-    fn baseline(hive: &Hive) -> Disk {
-        let mut disk = Disk::default();
-        disk.apply(&crash_save_plan(hive, CrashPoint::AfterPrimary));
-        disk
-    }
-
-    /// The harness recovery sequence at `point`: baseline saved, a mutation
-    /// applied in memory, then a crash_save at `point`. Returns the hive
-    /// recovered from disk, which must show baseline + the mutation.
+    /// The harness recovery sequence at `point`, on a SINGLE handle (as the
+    /// harness does, issue #61): baseline saved (a real `hive_save`), a
+    /// mutation applied in memory, then a `crash_save` at `point` instead of a
+    /// save. Returns the hive recovered from disk, which must show
+    /// baseline + the mutation.
     fn run_recovery(point: CrashPoint) -> Hive {
-        let mut hive = Hive::new_empty();
+        let mut hive = Hive::new_empty(); // generation 1
         hive.create_key("Baseline").unwrap();
-        let mut disk = baseline(&hive); // generation 1 committed
 
-        // Reload to pick up the committed generation (a fresh handle, as the
-        // agent has). new_empty is generation 1, so the baseline save is 2.
-        let mut hive = disk.recover().unwrap();
-        assert_eq!(hive.generation(), 2);
+        // Baseline hive_save: a completed save advances the handle's generation
+        // (to 2) and leaves a log of the previous generation on disk.
+        let mut disk = Disk::default();
+        disk.apply(&crash_save_plan(&mut hive, CrashPoint::AfterPrimary));
+        assert_eq!(hive.generation(), 2, "the committed save advanced the gen");
 
-        // Mutation M, then crash at `point` instead of a normal save.
+        // Mutation M on the SAME handle, then crash at `point`. Because the
+        // baseline advanced the generation, this journals a strictly newer
+        // generation (3), so recovery prefers it over the committed baseline.
         hive.create_key("Added").unwrap();
         hive.set_value("Added", "v", 4, &7u32.to_le_bytes())
             .unwrap();
-        disk.apply(&crash_save_plan(&hive, point));
+        disk.apply(&crash_save_plan(&mut hive, point));
 
         // A fresh load triggers recovery.
         disk.recover().unwrap()
@@ -213,21 +217,27 @@ mod tests {
 
     #[test]
     fn a_torn_log_is_ignored_and_the_primary_survives() {
-        // Baseline committed (primary gen 1 + log1 gen 1). A crash writes a
-        // corrupt journal to log2; recovery must fall back to the clean
-        // primary rather than the torn log.
+        // Baseline committed (primary gen 2 + log2 gen 2). A crash writes a
+        // corrupt journal to the other log; recovery must fall back to the
+        // clean primary rather than the torn log.
         let mut hive = Hive::new_empty();
         hive.create_key("Baseline").unwrap();
-        let mut disk = baseline(&hive);
+        let mut disk = Disk::default();
+        disk.apply(&crash_save_plan(&mut hive, CrashPoint::AfterPrimary));
 
-        // Corrupt journal in log2 (a torn write): valid length, bad checksum.
+        // Corrupt journal in log1 (a torn write): valid length, bad checksum.
+        // The valid baseline log (log2) and primary survive.
         let mut torn = disk.primary.clone().unwrap();
         torn[8] ^= 0xff; // flip a secondary-seq byte, breaking the checksum
-        disk.log2 = Some(torn);
+        disk.log1 = Some(torn);
 
         let recovered = disk.recover().unwrap();
         assert_eq!(recovered.subkeys("").unwrap(), vec!["Baseline"]);
-        assert_eq!(recovered.generation(), 2, "fell back to the clean primary");
+        assert_eq!(
+            recovered.generation(),
+            2,
+            "ignored the torn log, kept gen 2"
+        );
     }
 
     #[test]

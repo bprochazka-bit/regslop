@@ -2,11 +2,28 @@
 
 Last updated: 2026-05-31 (library agent)
 
-Merge state: steps 1-10 + offreg-alignment + security get/set + load
-robustness + panic-safety are on main, and the harness reports libreg-vs-offreg
-GREEN (16/16 semantic, 9/9 structural, 8/8 roundtrip). The ONLY remaining
-differential axis is `recovery` (step 11), which is libreg-internal (offreg
-writes no logs) and was made the library agent's gating item in issue #61.
+Merge state: ALL 11 STEPS are on main (steps 1-10 + offreg-alignment + security
+get/set + load robustness + panic-safety + step 11 recovery #66), and the
+harness reports libreg-vs-offreg GREEN (16/16 semantic, 9/9 structural, 8/8
+roundtrip). `recovery` (step 11) is libreg-internal and waits on the agent
+wiring `/test/crash_save` to drive the prototype (issue #61).
+
+THIS session (branch `agent/library-recovery-genfix` off main): a CORRECTNESS
+FIX to the recovery prototype merged in #66. Re-reading issue #61, the harness
+keeps the SAME handle across the baseline `hive_save` and the `crash_save`
+(no reload between), but `crash_save_plan` did not advance the in-memory
+generation, so two saves on one handle produced the same generation and
+`recover` would wrongly prefer the baseline. My #66 tests masked it by
+reloading between saves.
+- Fix: a completed save (`AfterPrimary`) now advances the handle's generation
+  (`crash_save_plan` takes `&mut Hive`; `Hive::set_generation`), so a later
+  save/crash on the same handle journals a strictly newer generation. The
+  pre-primary crash points do not advance (the save did not commit; the handle
+  is discarded after a simulated crash).
+- Tests rewritten to run the recovery sequence on a SINGLE handle, matching the
+  harness exactly (and so actually exercising the fix). 133 lib + corpus green.
+
+----- step 11 recovery prototype (#66, merged) and earlier below -----
 
 THIS session (branch `agent/library-recovery` off main): STEP 11, the dual-log
 crash-recovery PROTOTYPE (`src/log/`, Layer 3), answering issue #61.

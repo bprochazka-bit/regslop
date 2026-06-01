@@ -116,6 +116,13 @@ impl Hive {
         self.generation
     }
 
+    /// Set the committed generation. A completed recoverable save advances it
+    /// so the next save produces a strictly newer generation on the same
+    /// in-memory handle (see [`crate::log::crash_save_plan`]).
+    pub fn set_generation(&mut self, generation: u32) {
+        self.generation = generation;
+    }
+
     /// A complete hive file for this in-memory state stamped at sequence
     /// `generation` (a clean snapshot: primary == secondary == generation,
     /// checksum recomputed). Used for both the committed primary and the log
