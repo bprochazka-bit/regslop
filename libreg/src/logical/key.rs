@@ -10,9 +10,10 @@ use crate::format::nk::{KeyNode, KEY_COMP_NAME, OFFSET_NONE};
 use crate::format::FormatError;
 use core::cmp::Ordering;
 
-/// Parse the nk cell at `off`.
+/// Parse the nk cell at `off`. Bounds-checked, so a corrupt offset returns an
+/// error rather than panicking.
 pub fn read_nk(image: &HiveImage, off: u32) -> Result<KeyNode, FormatError> {
-    KeyNode::parse(image.content(off))
+    KeyNode::parse(image.try_content(off)?)
 }
 
 /// Rewrite the nk at `off` in place. The cell must already be large enough,

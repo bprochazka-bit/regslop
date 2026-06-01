@@ -14,7 +14,7 @@ use crate::format::sk::{SecurityCell, SK_HEADER_SIZE};
 use crate::format::FormatError;
 
 fn read_sk(image: &HiveImage, off: u32) -> Result<SecurityCell, FormatError> {
-    SecurityCell::parse(image.content(off))
+    SecurityCell::parse(image.try_content(off)?)
 }
 
 fn write_sk(image: &mut HiveImage, off: u32, sk: &SecurityCell) {

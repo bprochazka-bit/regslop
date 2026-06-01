@@ -229,7 +229,8 @@ impl Hive {
     pub fn key_security(&self, path: &str) -> Result<Vec<u8>, LogicalError> {
         let off = self.resolve(path)?.ok_or(LogicalError::NotFound)?;
         let nk = key::read_nk(&self.image, off)?;
-        let sk = crate::format::sk::SecurityCell::parse(self.image.content(nk.security_offset))?;
+        let sk =
+            crate::format::sk::SecurityCell::parse(self.image.try_content(nk.security_offset)?)?;
         Ok(sk.descriptor)
     }
 
@@ -1087,5 +1088,41 @@ mod tests {
         bytes[sk_size_field..sk_size_field + 4].copy_from_slice(&0u32.to_le_bytes());
         let hive = Hive::from_file_bytes(&bytes).expect("loads, root still valid");
         assert!(!hive.validate().is_empty(), "walk corruption flagged");
+    }
+
+    // The root nk record begins at bins offset 0x24 (cell at 0x20 + 4-byte
+    // size). Field offsets within the record come from format::nk.
+    const ROOT_NK_RECORD: usize = BASE_BLOCK_SIZE + 0x24;
+
+    #[test]
+    fn corrupt_subkey_list_offset_errors_not_panics() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("A").unwrap();
+        let mut bytes = hive.to_file();
+        // Point the root's subkeys_list_offset (record offset 0x1c) off the end.
+        let field = ROOT_NK_RECORD + 0x1c;
+        bytes[field..field + 4].copy_from_slice(&0x00ff_ffffu32.to_le_bytes());
+
+        let loaded = Hive::from_file_bytes(&bytes).expect("loads; root nk still parses");
+        // Enumerating subkeys dereferences the bogus offset; it must error.
+        assert!(
+            matches!(loaded.subkeys(""), Err(LogicalError::Format(_))),
+            "bogus subkey-list offset errors instead of panicking"
+        );
+    }
+
+    #[test]
+    fn corrupt_security_offset_errors_not_panics() {
+        let hive = Hive::new_empty();
+        let mut bytes = hive.to_file();
+        // Point the root's security_offset (record offset 0x2c) off the end.
+        let field = ROOT_NK_RECORD + 0x2c;
+        bytes[field..field + 4].copy_from_slice(&0x00ff_ffffu32.to_le_bytes());
+
+        let loaded = Hive::from_file_bytes(&bytes).expect("loads; root nk still parses");
+        assert!(
+            matches!(loaded.key_security(""), Err(LogicalError::Format(_))),
+            "bogus security offset errors instead of panicking"
+        );
     }
 }
