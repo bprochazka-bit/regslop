@@ -33,10 +33,22 @@ const SEED: &str = "/tmp/client_seed.hiv";
 #[derive(Deserialize)]
 struct ClientTest {
     name: String,
-    /// Shared command tails, e.g. `add Software\Foo /v Greeting /t REG_SZ /d hello /f`.
-    /// The key (second token) is relative to the hive root; the runner prefixes
-    /// `HKLM\` for our tool and `HKLM\HarnessTmp\` for the loaded Windows hive.
+    /// "reg" (default) or "sc".
+    #[serde(default = "default_kind")]
+    kind: String,
+    /// For sc tests: the service name (used to reg-save and clean up the live
+    /// service, and to extract its subtree from our offline hive).
+    #[serde(default)]
+    service: Option<String>,
+    /// Shared command tails. For reg: `add Software\Foo /v ...` (the key is
+    /// relative to the hive root; the runner prefixes `HKLM\` for our tool and
+    /// `HKLM\HarnessTmp\` for the loaded Windows hive). For sc the same string
+    /// runs both tools verbatim (`create Name binPath= ...`).
     ops: Vec<String>,
+}
+
+fn default_kind() -> String {
+    "reg".to_string()
 }
 
 pub struct CaseResult {
@@ -46,14 +58,32 @@ pub struct CaseResult {
 }
 
 /// Run every `*.yaml` client test under `tests_dir`. `agent` is the libreg agent
-/// (used to canonicalize both result hives); `vm_host` is the Windows VM.
-pub fn run(agent: &Client, vm_host: &str, reg_bin: &Path, tests_dir: &Path) -> Vec<CaseResult> {
+/// (used to canonicalize result hives); `vm_host` is the Windows VM; `reg_bin` /
+/// `sc_bin` are our tools (each needed only by tests of that kind).
+pub fn run(
+    agent: &Client,
+    vm_host: &str,
+    reg_bin: Option<&Path>,
+    sc_bin: Option<&Path>,
+    tests_dir: &Path,
+) -> Vec<CaseResult> {
     if let Err(e) = make_seed(agent) {
         return vec![CaseResult { name: "<seed>".into(), passed: false, detail: e }];
     }
     let mut results = Vec::new();
     for test in load_tests(tests_dir) {
-        results.push(run_case(agent, vm_host, reg_bin, &test));
+        let fail = |detail: String| CaseResult { name: test.name.clone(), passed: false, detail };
+        let r = match test.kind.as_str() {
+            "sc" => match sc_bin {
+                Some(bin) => run_sc_case(agent, vm_host, bin, &test),
+                None => fail("sc test but no --sc-bin given".to_string()),
+            },
+            _ => match reg_bin {
+                Some(bin) => run_case(agent, vm_host, bin, &test),
+                None => fail("reg test but no --reg-bin given".to_string()),
+            },
+        };
+        results.push(r);
     }
     results
 }
@@ -141,6 +171,109 @@ fn run_case(agent: &Client, vm_host: &str, reg_bin: &Path, test: &ClientTest) ->
         let summary: Vec<String> = diffs.iter().take(6).map(|d| format!("{}: {}", d.path, d.detail)).collect();
         fail(summary.join(" | "))
     }
+}
+
+/// An `sc` case. `sc.exe` only talks to the live SCM, so it cannot target a
+/// loaded hive the way `reg.exe load` lets `reg add`: instead we run `sc.exe`
+/// against the live registry, `reg save` the resulting `Services\<name>`
+/// subtree, and compare that to the same subtree our `sc` writes into an
+/// offline SYSTEM hive. The live service is created and deleted on the VM.
+fn run_sc_case(agent: &Client, vm_host: &str, sc_bin: &Path, test: &ClientTest) -> CaseResult {
+    let fail = |detail: String| CaseResult { name: test.name.clone(), passed: false, detail };
+    let Some(service) = &test.service else {
+        return fail("sc test needs a `service` field".to_string());
+    };
+    let safe = sanitize(&test.name);
+    let l_hive = format!("/tmp/client_{safe}_lin.hiv");
+    let w_local = format!("/tmp/client_{safe}_win.hiv");
+    let remote = format!("scd_{safe}.hiv");
+
+    // --- Linux side: our sc against an offline SYSTEM hive (ControlSet001) ---
+    if let Err(e) = std::fs::copy(SEED, &l_hive) {
+        return fail(format!("seed copy: {e}"));
+    }
+    for op in &test.ops {
+        let mut cmd = Command::new(sc_bin);
+        for a in shell_split(op) {
+            cmd.arg(a);
+        }
+        cmd.args(["--hive", &l_hive, "--controlset", "1"]);
+        match cmd.output() {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => return fail(format!("our `sc {op}` exit {:?}: {}", o.status.code(), String::from_utf8_lossy(&o.stderr).trim())),
+            Err(e) => return fail(format!("running our sc: {e}")),
+        }
+    }
+
+    // --- Windows side: live sc.exe, then reg-save the Services subtree ---
+    let mut chain = format!("sc delete {service} >nul 2>nul"); // clear any stale service
+    for op in &test.ops {
+        chain.push_str(&format!(" & sc {op}"));
+    }
+    chain.push_str(&format!(
+        " & reg save HKLM\\SYSTEM\\CurrentControlSet\\Services\\{service} {WIN_SHARE_DIR}\\{remote} /y"
+    ));
+    chain.push_str(&format!(" & sc delete {service}")); // always remove the live service
+    if let Err(e) = vm_exec(vm_host, &format!("cmd.exe /c \"{chain}\"")) {
+        return fail(format!("vm exec: {e}"));
+    }
+    if let Err(e) = smb_get(vm_host, &remote, &w_local) {
+        return fail(format!("smb pull (service subtree): {e}"));
+    }
+    let _ = smb_del(vm_host, &remote);
+
+    let lc = match canonicalize(agent, &l_hive) {
+        Ok(v) => v,
+        Err(e) => return fail(format!("canonicalize our hive: {e}")),
+    };
+    let wc = match canonicalize(agent, &w_local) {
+        Ok(v) => v,
+        Err(e) => return fail(format!("canonicalize service subtree: {e}")),
+    };
+    let _ = std::fs::remove_file(&l_hive);
+    let _ = std::fs::remove_file(&w_local);
+
+    // Our service node is at ControlSet001\Services\<name>; the reg-saved hive's
+    // root IS that node. Compare the two as service views (top-level name elided).
+    let ours = match extract_service(&lc, service) {
+        Some(n) => n,
+        None => return fail(format!("our hive has no ControlSet001\\Services\\{service}")),
+    };
+    let theirs = wc.get("root").cloned().unwrap_or(Value::Null);
+    let opts = SemanticOptions { ignore_timestamps: true, ignore_security: true };
+    let diffs = semantic::compare(&service_view(&ours), &service_view(&theirs), &opts).diffs;
+    if diffs.is_empty() {
+        CaseResult { name: test.name.clone(), passed: true, detail: String::new() }
+    } else {
+        let summary: Vec<String> = diffs.iter().take(6).map(|d| format!("{}: {}", d.path, d.detail)).collect();
+        fail(summary.join(" | "))
+    }
+}
+
+/// Find the `ControlSet001\Services\<service>` node in a canonical dump.
+fn extract_service(canon: &Value, service: &str) -> Option<Value> {
+    let root = canon.get("root")?;
+    let cs = find_subkey(root, "ControlSet001")?;
+    let services = find_subkey(cs, "Services")?;
+    find_subkey(services, service).cloned()
+}
+
+fn find_subkey<'a>(node: &'a Value, name: &str) -> Option<&'a Value> {
+    node.get("subkeys")?
+        .as_array()?
+        .iter()
+        .find(|s| s.get("name").and_then(|n| n.as_str()).is_some_and(|n| n.eq_ignore_ascii_case(name)))
+}
+
+/// A comparable view of a service node: drop the top-level name (our node is
+/// named `<service>`, the reg-saved root is unnamed) so only the values, class,
+/// security, and subkeys are compared.
+fn service_view(node: &Value) -> Value {
+    let mut v = node.clone();
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("name".to_string(), Value::String(String::new()));
+    }
+    v
 }
 
 // --- helpers ---
