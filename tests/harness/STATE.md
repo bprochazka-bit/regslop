@@ -2,6 +2,30 @@
 
 Last updated: 2026-06-01
 
+## Recovery tag: driven, no longer n/a (ADR 0004 / issue #61)
+
+`src/recovery.rs` drives libreg's crash-injection hook. Per case it runs an op
+sequence to build and commit a baseline, applies a mutation M (the ops after the
+last `hive_save`), captures the in-memory dump D1, then `POST /test/crash_save
+{ point }` instead of a normal save, closes, reloads (which recovers), and
+asserts the reloaded dump equals D1. Each case yields a `recovery`-tagged
+`TestResult`, so the report's `recovery:` line shows a real pass rate.
+
+- Reuses the runner op helpers (`endpoint`/`build_body`/`substitute`, now
+  `pub(crate)`) and the semantic differ (timestamps ignored).
+- Single agent, libreg only: it needs `/test/crash_save` + log-backed
+  save/load. The in-memory backend reports `crash_save` unsupported, which maps
+  to `Na` (skipped), not a failure.
+- Flag `--recovery-tests-dir DIR`; results append to the run like the corpus.
+  Recovery is independent of the cross-agent differential (offreg writes no
+  logs, so this is a libreg-internal property).
+- `tests/recovery/recover.yaml`: 3 cases, one per crash point. **recovery 3/3**
+  against the libreg agent (logged-but-not-committed write recovers on reload).
+
+Depends on the agent PR (`/test/crash_save` + log-backed save/load); built and
+verified together. Once both land, the spec agent can add `/test/crash_save` to
+CONTRACTS (MINOR, Linux-only) per ADR 0004.
+
 ## Client-differential mode, phase 1 (issue #68)
 
 Validates the `reg`/`sc` CLIs the way libreg is validated: run the same command
