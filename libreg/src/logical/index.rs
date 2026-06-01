@@ -92,8 +92,39 @@ fn write_lh_leaf(image: &mut HiveImage, entries: &[(u32, String)]) -> u32 {
     off
 }
 
+/// Remove the subkey at `child_off` from `parent`'s list, rebuilding the
+/// index without it (and demoting an ri back to a single lh, or to no list at
+/// all, as the count drops). Updates `parent`'s `subkeys_list_offset` and
+/// `subkey_count` in place; the caller writes the parent nk back and frees the
+/// child's own cells. `child_off`'s nk must still be valid (it is read for its
+/// name during the rebuild), so detach before freeing the child.
+pub(super) fn remove_subkey(
+    image: &mut HiveImage,
+    parent: &mut KeyNode,
+    child_off: u32,
+) -> Result<(), LogicalError> {
+    let entries: Vec<(u32, String)> = list_entries(image, parent)?
+        .into_iter()
+        .filter(|(off, _)| *off != child_off)
+        .collect();
+
+    if parent.subkeys_list_offset != OFFSET_NONE {
+        free_subkey_list(image, parent.subkeys_list_offset)?;
+    }
+    parent.subkeys_list_offset = if entries.is_empty() {
+        OFFSET_NONE
+    } else {
+        write_subkey_index(image, &entries)
+    };
+    parent.subkey_count = entries.len() as u32;
+    Ok(())
+}
+
 /// Free a subkey list cell and, if it is an ri index, its leaf cells too.
-fn free_subkey_list(image: &mut HiveImage, list_offset: u32) -> Result<(), LogicalError> {
+pub(super) fn free_subkey_list(
+    image: &mut HiveImage,
+    list_offset: u32,
+) -> Result<(), LogicalError> {
     if signature_of(image.content(list_offset)) == Some(*b"ri") {
         let ri = IndexRoot::parse(image.content(list_offset))?;
         for leaf_off in ri.leaf_offsets {

@@ -14,7 +14,7 @@
 use super::key;
 use super::LogicalError;
 use crate::alloc::HiveImage;
-use crate::format::nk::OFFSET_NONE;
+use crate::format::nk::{KeyNode, OFFSET_NONE};
 use crate::format::vk::{ValueKey, VALUE_COMP_NAME, VK_INLINE_MAX};
 
 /// Largest value data stored in a single plain data cell. Larger values need
@@ -109,6 +109,65 @@ pub fn list_names(image: &HiveImage, key_off: u32) -> Result<Vec<String>, Logica
         out.push(decode_value_name(&vk));
     }
     Ok(out)
+}
+
+/// Delete the value `name` from the key at `key_off`, returning whether it
+/// existed. Frees the vk cell and its out-of-line data cell, and rebuilds the
+/// value list (freeing it when the last value is removed).
+pub fn delete(image: &mut HiveImage, key_off: u32, name: &str) -> Result<bool, LogicalError> {
+    let mut nk = key::read_nk(image, key_off)?;
+    let mut offsets = read_value_offsets(image, nk.values_list_offset, nk.value_count)?;
+
+    let mut found = None;
+    for (i, &vk_off) in offsets.iter().enumerate() {
+        let vk = ValueKey::parse(image.content(vk_off))?;
+        if name_matches(name, &vk) {
+            found = Some(i);
+            break;
+        }
+    }
+    let Some(idx) = found else {
+        return Ok(false);
+    };
+
+    let vk_off = offsets.remove(idx);
+    free_value_cell(image, vk_off)?;
+
+    // Rebuild the value list (or drop it when empty).
+    if nk.values_list_offset != OFFSET_NONE {
+        image.free(nk.values_list_offset);
+    }
+    if offsets.is_empty() {
+        nk.values_list_offset = OFFSET_NONE;
+        nk.value_count = 0;
+    } else {
+        nk.values_list_offset = write_value_list(image, &offsets);
+        nk.value_count = offsets.len() as u32;
+    }
+    key::write_nk_inplace(image, key_off, &nk);
+    Ok(true)
+}
+
+/// Free every value of `nk`: each vk cell, its data cell, and the value-list
+/// cell. Used when deleting the whole key (the caller frees the nk itself).
+pub(super) fn free_all(image: &mut HiveImage, nk: &KeyNode) -> Result<(), LogicalError> {
+    for vk_off in read_value_offsets(image, nk.values_list_offset, nk.value_count)? {
+        free_value_cell(image, vk_off)?;
+    }
+    if nk.values_list_offset != OFFSET_NONE {
+        image.free(nk.values_list_offset);
+    }
+    Ok(())
+}
+
+/// Free a vk cell and its out-of-line data cell (inline data needs no cell).
+fn free_value_cell(image: &mut HiveImage, vk_off: u32) -> Result<(), LogicalError> {
+    let vk = ValueKey::parse(image.content(vk_off))?;
+    if !vk.is_inline() && vk.data_len() > 0 {
+        image.free(vk.data_offset);
+    }
+    image.free(vk_off);
+    Ok(())
 }
 
 /// Build a vk for `data`: inline when it fits in 4 bytes, otherwise a
