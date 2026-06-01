@@ -116,10 +116,12 @@ fn check_key_names(bytes: &[u8], w: &regf::Walk) -> Status {
 
 /// Invariant 11: subkey-list cells use a recognized form, the declared entry
 /// count fits the cell, and a leaf (lf/lh) stays under the ri promotion
-/// threshold (CONTRACTS: lf/lh for fewer than 1015 entries, ri beyond). Found
-/// by scanning allocated cells for the lf/lh/li/ri signatures. The exact cell
-/// each nk points at is not followed here (that is the logical tree, inv7); a
-/// stray or corrupt list cell is still caught.
+/// threshold (CONTRACTS 0.1.7: an lf/lh leaf holds at most 507 entries; more
+/// than 507 uses an ri index root. The earlier "1015" was wrong, corrected
+/// against tests/corpus/synthetic/ref_ri.hiv). Found by scanning allocated
+/// cells for the lf/lh/li/ri signatures. The exact cell each nk points at is not
+/// followed here (that is the logical tree, inv7); a stray or corrupt list cell
+/// is still caught.
 fn check_subkey_lists(bytes: &[u8], w: &regf::Walk) -> Status {
     let mut viol = Vec::new();
     let mut found = 0;
@@ -144,9 +146,9 @@ fn check_subkey_lists(bytes: &[u8], w: &regf::Walk) -> Status {
                 c.content_len
             ));
         }
-        if (sig == b"lf" || sig == b"lh") && count > 1015 {
+        if (sig == b"lf" || sig == b"lh") && count > 507 {
             viol.push(format!(
-                "{} leaf at {base:#x} has {count} entries (> 1015); should promote to ri",
+                "{} leaf at {base:#x} has {count} entries (> 507); should promote to ri",
                 String::from_utf8_lossy(sig)
             ));
         }
