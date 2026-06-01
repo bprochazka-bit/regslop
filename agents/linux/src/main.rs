@@ -13,6 +13,7 @@ mod error;
 mod handlers;
 mod libreg_backend;
 mod model;
+mod sddl;
 mod valuec;
 
 use backend::{Backend, MemBackend};

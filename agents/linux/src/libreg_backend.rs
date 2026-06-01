@@ -92,7 +92,8 @@ fn require_key(hive: &Hive, path: &str) -> Result<()> {
 /// is a later slice). The canonical serializer sorts subkeys and values, so the
 /// order produced here does not matter.
 fn build_key(hive: &Hive, name: &str, path: &str) -> Result<Key> {
-    let mut key = Key::new(name); // default sddl + fixed last_write
+    let mut key = Key::new(name); // fixed last_write; security filled in below
+    key.security_sddl = crate::sddl::to_sddl(&hive.key_security(path).map_err(map_err)?)?;
     for vname in hive.values(path).map_err(map_err)? {
         if let Some((ty, bytes)) = hive.get_value(path, &vname).map_err(map_err)? {
             key.values.push(Value {
@@ -292,15 +293,16 @@ impl Backend for LibregBackend {
     fn security_get(&self, handle: &str, path: &str) -> Result<String> {
         self.with(handle, |e| {
             require_key(&e.hive, path)?;
-            // libreg assigns the ratified default descriptor and there is no
-            // setter yet, so every key carries the default. Binary<->SDDL
-            // conversion (for non-default descriptors) is a later slice.
-            Ok(model::DEFAULT_SDDL.to_string())
+            crate::sddl::to_sddl(&e.hive.key_security(path).map_err(map_err)?)
         })
     }
 
-    fn security_set(&self, _handle: &str, _path: &str, _sddl: &str) -> Result<()> {
-        Err(unsupported("security_set"))
+    fn security_set(&self, handle: &str, path: &str, sddl: &str) -> Result<()> {
+        let descriptor = crate::sddl::from_sddl(sddl)?;
+        self.with(handle, |e| {
+            require_key(&e.hive, path)?;
+            e.hive.set_key_security(path, descriptor).map_err(map_err)
+        })
     }
 
     fn dump(&self, handle: &str) -> Result<serde_json::Value> {
