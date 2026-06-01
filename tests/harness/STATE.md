@@ -1,6 +1,19 @@
 # Harness: STATE
 
-Last updated: 2026-05-31
+Last updated: 2026-06-01
+
+## Coverage: big-data values and malformed requests (latest session)
+
+Two new test definitions, both green libreg-vs-offreg:
+
+- `tests/big_data_value.yaml`: a 20001-byte REG_BINARY value, over the 16344
+  threshold, so it exercises the big-data (db) cell path in both backends. The
+  data round-trips identically through real regf.
+- `tests/badrequest.yaml` (`malformed_requests_rejected`): a leading-separator
+  path and an unknown value-type constant, both must surface as BAD_REQUEST
+  (0.1.4) on both sides. This caught a real LibregBackend conformance gap (it
+  accepted a leading-separator path because libreg's path splitter is lenient);
+  fixed agent-side. libreg-vs-offreg is 16/16 semantic with these added.
 
 ## Linux-side byte-level structural checks (latest session)
 

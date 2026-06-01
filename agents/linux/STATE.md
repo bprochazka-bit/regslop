@@ -2,6 +2,16 @@
 
 Last updated: 2026-06-01
 
+## LibregBackend path validation (latest)
+
+The new BAD_REQUEST coverage test caught that `LibregBackend` accepted a
+leading-separator path (`\Foo`): it delegated straight to libreg, whose path
+splitter filters empty components and so silently strips the separator, while
+the contract (and the MemBackend) require BAD_REQUEST. Added a `check_path`
+helper (reusing `model::Key::split_path`) called by `key_create` and
+`require_key`, so every path-taking op validates at the agent edge before
+touching libreg. libreg-vs-offreg back to GREEN (16/16 with the new tests).
+
 ## LibregBackend: GREEN vs offreg, 14/14 semantic (latest)
 
 The `LibregBackend` (`--backend libreg`, default stays `mem`) now wraps libreg's
