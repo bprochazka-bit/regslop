@@ -7,6 +7,7 @@ pub mod diag;
 pub mod hive;
 pub mod key;
 pub mod security;
+pub mod test;
 pub mod value;
 
 use crate::backend::Backend;
@@ -43,6 +44,8 @@ pub fn dispatch(backend: &dyn Backend, method: &str, path: &str, body: &J) -> Re
         "/key/security" => security::dispatch(backend, method, body),
 
         "/hive/dump" => diag::dump(backend, body),
+        "/test/crash_save" => test::crash_save(backend, body),
+
         "/hive/checksum" => diag::checksum(backend, body),
         "/hive/validate" => diag::validate(backend, body),
 

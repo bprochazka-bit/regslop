@@ -16,6 +16,7 @@ use crate::canonical;
 use crate::error::{AgentError, Code, Result};
 use crate::model::{self, Key, KeyInfo, Listing, Validation, Value};
 use crate::valuec;
+use libreg::log::{self, CrashPoint, Slot};
 use libreg::logical::{Hive, LogicalError};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -68,6 +69,44 @@ fn map_err(e: LogicalError) -> AgentError {
             AgentError::new(Code::Internal, format!("libreg does not support this yet: {what}"))
         }
         LogicalError::Format(f) => AgentError::new(Code::HiveCorrupt, format!("libreg format error: {f}")),
+    }
+}
+
+/// The transaction-log file paths for a hive primary at `path`.
+fn log_paths(path: &str) -> (String, String) {
+    (format!("{path}.LOG1"), format!("{path}.LOG2"))
+}
+
+/// Execute a `crash_save_plan` against the hive's on-disk files, writing each
+/// `(slot, bytes)` to the primary / `.LOG1` / `.LOG2`. Returns the primary
+/// length (0 if this plan did not commit the primary, i.e. a crash point).
+fn apply_plan(path: &str, plan: &[(Slot, Vec<u8>)]) -> Result<u64> {
+    let (log1, log2) = log_paths(path);
+    let mut primary_len = 0u64;
+    for (slot, bytes) in plan {
+        let file = match slot {
+            Slot::Primary => path.to_string(),
+            Slot::Log1 => log1.clone(),
+            Slot::Log2 => log2.clone(),
+        };
+        std::fs::write(&file, bytes)
+            .map_err(|e| AgentError::new(Code::Internal, format!("write {file}: {e}")))?;
+        if *slot == Slot::Primary {
+            primary_len = bytes.len() as u64;
+        }
+    }
+    Ok(primary_len)
+}
+
+/// Map a `/test/crash_save` point string to a libreg crash point.
+fn parse_crash_point(point: &str) -> Result<CrashPoint> {
+    match point {
+        "after_first_log" => Ok(CrashPoint::AfterFirstLog),
+        "after_log_before_primary" => Ok(CrashPoint::AfterLogBeforePrimary),
+        "after_primary" => Ok(CrashPoint::AfterPrimary),
+        other => Err(AgentError::bad_request(format!(
+            "unknown crash point '{other}' (after_first_log | after_log_before_primary | after_primary)"
+        ))),
     }
 }
 
@@ -162,10 +201,18 @@ impl Backend for LibregBackend {
     }
 
     fn hive_load(&self, path: &str) -> Result<String> {
-        let bytes = std::fs::read(path)
-            .map_err(|_| AgentError::new(Code::HiveNotFound, format!("path does not exist: {path}")))?;
-        let hive = Hive::from_file_bytes(&bytes)
-            .map_err(|e| AgentError::new(Code::HiveCorrupt, format!("libreg cannot load hive: {e}")))?;
+        // Load through recovery: read the primary and both logs, then let libreg
+        // pick the highest valid generation and replay if the primary is stale
+        // (a save crashed before committing). A clean hive recovers to itself.
+        let (log1, log2) = log_paths(path);
+        let primary = std::fs::read(path).ok();
+        let l1 = std::fs::read(&log1).ok();
+        let l2 = std::fs::read(&log2).ok();
+        if primary.is_none() && l1.is_none() && l2.is_none() {
+            return Err(AgentError::new(Code::HiveNotFound, format!("path does not exist: {path}")));
+        }
+        let hive = log::recover(primary.as_deref(), l1.as_deref(), l2.as_deref())
+            .map_err(|e| AgentError::new(Code::HiveCorrupt, format!("libreg cannot recover hive: {e}")))?;
         let handle = self.new_handle();
         self.hives
             .lock()
@@ -175,11 +222,19 @@ impl Backend for LibregBackend {
     }
 
     fn hive_save(&self, handle: &str) -> Result<u64> {
+        // A normal save is a recoverable save that runs to completion: journal
+        // the new generation, then commit the primary (advancing the generation).
         self.with(handle, |e| {
-            let bytes = e.hive.to_file();
-            std::fs::write(&e.path, &bytes)
-                .map_err(|err| AgentError::new(Code::Internal, format!("write {}: {err}", e.path)))?;
-            Ok(bytes.len() as u64)
+            let plan = log::crash_save_plan(&mut e.hive, CrashPoint::AfterPrimary);
+            apply_plan(&e.path, &plan)
+        })
+    }
+
+    fn crash_save(&self, handle: &str, point: &str) -> Result<u64> {
+        let cp = parse_crash_point(point)?;
+        self.with(handle, |e| {
+            let plan = log::crash_save_plan(&mut e.hive, cp);
+            apply_plan(&e.path, &plan)
         })
     }
 
