@@ -53,11 +53,10 @@ pub fn save(state: &AppState, body: &Value) -> Result<Value, AgentError> {
 
 /// POST /hive/close { handle } -> {}
 pub fn close(state: &AppState, body: &Value) -> Result<Value, AgentError> {
-    let handle = body
-        .get("handle")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AgentError::new("HANDLE_INVALID", "missing handle"))?;
-    match state.registry.remove(handle) {
+    // Missing/non-string handle is BAD_REQUEST; a known-shaped but unknown
+    // handle is HANDLE_INVALID (mirrors get_hive).
+    let handle = req_str(body, "handle")?;
+    match state.registry.remove(&handle) {
         // Dropping the Arc closes the offreg hive handle.
         Some(_) => Ok(json!({})),
         None => Err(AgentError::new(

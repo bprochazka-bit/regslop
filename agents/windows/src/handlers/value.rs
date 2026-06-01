@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 
-use super::{get_hive, req_str};
+use super::{get_hive, req_path, req_str};
 use crate::error::AgentError;
 use crate::offreg::key::Key;
 use crate::state::AppState;
@@ -12,7 +12,7 @@ use crate::valuec;
 pub fn set(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
     let hive = arc.lock().unwrap();
-    let key_path = req_str(body, "key")?;
+    let key_path = req_path(body, "key")?;
     let name = req_str(body, "name")?;
     let type_name = req_str(body, "type")?;
     let data = body.get("data").cloned().unwrap_or(Value::Null);
@@ -27,7 +27,7 @@ pub fn set(state: &AppState, body: &Value) -> Result<Value, AgentError> {
 pub fn get(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
     let hive = arc.lock().unwrap();
-    let key_path = req_str(body, "key")?;
+    let key_path = req_path(body, "key")?;
     let name = req_str(body, "name")?;
 
     let key = Key::open(hive.root(), &key_path)?;
@@ -42,7 +42,7 @@ pub fn get(state: &AppState, body: &Value) -> Result<Value, AgentError> {
 pub fn delete(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
     let hive = arc.lock().unwrap();
-    let key_path = req_str(body, "key")?;
+    let key_path = req_path(body, "key")?;
     let name = req_str(body, "name")?;
 
     let key = Key::open(hive.root(), &key_path)?;

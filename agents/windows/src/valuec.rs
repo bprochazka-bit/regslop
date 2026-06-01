@@ -84,8 +84,11 @@ pub fn decode(ty: u32, bytes: &[u8]) -> Value {
 
 /// Encode a JSON `{ type, data }` pair into (offreg type DWORD, raw bytes).
 pub fn encode(type_name_in: &str, data: &Value) -> Result<(u32, Vec<u8>), AgentError> {
+    // An unrecognized type NAME is an unknown constant: a malformed request
+    // (BAD_REQUEST), distinct from TYPE_MISMATCH (a known type whose data does
+    // not fit). CONTRACTS 0.1.4.
     let ty = type_from_name(type_name_in)
-        .ok_or_else(|| AgentError::new("TYPE_MISMATCH", format!("unknown type {type_name_in}")))?;
+        .ok_or_else(|| AgentError::new("BAD_REQUEST", format!("unknown type {type_name_in}")))?;
     let mismatch = |what: &str| AgentError::new("TYPE_MISMATCH", format!("{type_name_in} expects {what}"));
 
     let bytes = match ty {
@@ -231,5 +234,13 @@ mod tests {
         assert_eq!(e.code, "TYPE_MISMATCH");
         let e = encode("REG_SZ", &json!(123)).unwrap_err();
         assert_eq!(e.code, "TYPE_MISMATCH");
+    }
+
+    #[test]
+    fn unknown_type_name_is_bad_request() {
+        // An unrecognized type name is an unknown constant, not a data-shape
+        // mismatch: CONTRACTS 0.1.4 BAD_REQUEST, distinct from TYPE_MISMATCH.
+        let e = encode("REG_BOGUS", &json!("x")).unwrap_err();
+        assert_eq!(e.code, "BAD_REQUEST");
     }
 }

@@ -64,8 +64,26 @@ pub fn req_str(body: &Value, field: &str) -> Result<String, AgentError> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| {
-            AgentError::new("INTERNAL", format!("missing or non-string field '{field}'"))
+            // A missing or wrong-typed required field is a malformed request
+            // (caller error), not an agent bug. CONTRACTS 0.1.4: BAD_REQUEST.
+            AgentError::new("BAD_REQUEST", format!("missing or non-string field '{field}'"))
         })
+}
+
+/// Like [`req_str`], but for a registry key path. Additionally rejects a path
+/// that starts with the `\` separator: CONTRACTS says paths never start with a
+/// separator, so a leading separator is a malformed request (BAD_REQUEST), an
+/// invalid constant rather than a real not-found. The empty string (the hive
+/// root) is allowed. Hive filesystem paths use [`req_str`], not this.
+pub fn req_path(body: &Value, field: &str) -> Result<String, AgentError> {
+    let p = req_str(body, field)?;
+    if p.starts_with('\\') {
+        return Err(AgentError::new(
+            "BAD_REQUEST",
+            format!("path must not start with a separator: '{p}'"),
+        ));
+    }
+    Ok(p)
 }
 
 pub fn opt_str(body: &Value, field: &str) -> Option<String> {
@@ -76,14 +94,40 @@ pub fn opt_bool(body: &Value, field: &str, default: bool) -> bool {
     body.get(field).and_then(|v| v.as_bool()).unwrap_or(default)
 }
 
-/// Resolve the `handle` field to its hive, returning HANDLE_INVALID on miss.
+/// Resolve the `handle` field to its hive. A missing or non-string `handle` is
+/// a malformed request (BAD_REQUEST); a well-formed handle string the agent
+/// does not know is HANDLE_INVALID. The harness relies on that split.
 pub fn get_hive(state: &AppState, body: &Value) -> Result<Arc<Mutex<Hive>>, AgentError> {
-    let handle = body
-        .get("handle")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AgentError::new("HANDLE_INVALID", "missing handle"))?;
+    let handle = req_str(body, "handle")?;
     state
         .registry
-        .get(handle)
+        .get(&handle)
         .ok_or_else(|| AgentError::new("HANDLE_INVALID", format!("unknown handle {handle}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{req_path, req_str};
+    use serde_json::json;
+
+    #[test]
+    fn missing_or_wrong_typed_required_field_is_bad_request() {
+        let e = req_str(&json!({}), "path").unwrap_err();
+        assert_eq!(e.code, "BAD_REQUEST");
+        let e = req_str(&json!({ "path": 123 }), "path").unwrap_err();
+        assert_eq!(e.code, "BAD_REQUEST");
+    }
+
+    #[test]
+    fn req_path_rejects_leading_separator() {
+        // Empty (root) and ordinary paths pass.
+        assert_eq!(req_path(&json!({ "path": "" }), "path").unwrap(), "");
+        assert_eq!(
+            req_path(&json!({ "path": "Software\\Foo" }), "path").unwrap(),
+            "Software\\Foo"
+        );
+        // A leading separator is a malformed request.
+        let e = req_path(&json!({ "path": "\\Software" }), "path").unwrap_err();
+        assert_eq!(e.code, "BAD_REQUEST");
+    }
 }

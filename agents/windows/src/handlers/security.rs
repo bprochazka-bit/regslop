@@ -6,7 +6,7 @@
 
 use serde_json::{json, Value};
 
-use super::{get_hive, req_str};
+use super::{get_hive, req_path, req_str};
 use crate::error::AgentError;
 use crate::offreg::key::Key;
 use crate::sddl::{sd_to_sddl, sddl_to_sd};
@@ -35,7 +35,7 @@ pub fn dispatch(state: &AppState, method: &str, body: &Value) -> Result<Value, A
 fn get(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
     let hive = arc.lock().unwrap();
-    let path = req_str(body, "path")?;
+    let path = req_path(body, "path")?;
     let key = Key::open(hive.root(), &path)?;
 
     // Prefer the full descriptor; fall back without the SACL if it is not
@@ -57,7 +57,7 @@ fn read_no_sacl(key: &Key) -> Result<String, AgentError> {
 fn set(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
     let hive = arc.lock().unwrap();
-    let path = req_str(body, "path")?;
+    let path = req_path(body, "path")?;
     let sddl = req_str(body, "sddl")?;
 
     let sd = sddl_to_sd(&sddl)?;
