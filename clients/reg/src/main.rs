@@ -20,7 +20,7 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
             eprintln!("ERROR: {e}");
             ExitCode::from(e.exit_code() as u8)
@@ -98,29 +98,31 @@ fn is_switch(token: &str) -> bool {
     }
 }
 
-fn run(args: &[String]) -> CliResult<()> {
+/// Run a command, returning the process exit code (0 success; `reg compare`
+/// returns 2 when the trees differ, matching reg.exe).
+fn run(args: &[String]) -> CliResult<i32> {
     let (cmd, rest) = match args.split_first() {
         Some((c, r)) => (c.to_ascii_lowercase(), r),
         None => {
             print_usage();
-            return Ok(());
+            return Ok(0);
         }
     };
     match cmd.as_str() {
         "query" => cmd_query(rest),
-        "add" => cmd_add(rest),
-        "delete" => cmd_delete(rest),
-        "copy" => cmd_copy(rest),
-        "save" => cmd_save(rest),
-        "restore" => cmd_restore(rest),
-        "load" => cmd_load(rest),
-        "unload" => cmd_unload(rest),
-        "export" => cmd_export(rest),
-        "import" => cmd_import(rest),
+        "add" => cmd_add(rest).map(|_| 0),
+        "delete" => cmd_delete(rest).map(|_| 0),
+        "copy" => cmd_copy(rest).map(|_| 0),
+        "save" => cmd_save(rest).map(|_| 0),
+        "restore" => cmd_restore(rest).map(|_| 0),
+        "load" => cmd_load(rest).map(|_| 0),
+        "unload" => cmd_unload(rest).map(|_| 0),
+        "export" => cmd_export(rest).map(|_| 0),
+        "import" => cmd_import(rest).map(|_| 0),
         "compare" => cmd_compare(rest),
         "/?" | "-h" | "--help" | "help" => {
             print_usage();
-            Ok(())
+            Ok(0)
         }
         other => Err(CliError::usage(format!("unknown reg operation '{other}'"))),
     }
@@ -138,7 +140,7 @@ fn resolve(key: &str, flags: &Flags) -> CliResult<(PathBuf, String, RegPath)> {
 
 // ---- query -----------------------------------------------------------------
 
-fn cmd_query(args: &[String]) -> CliResult<()> {
+fn cmd_query(args: &[String]) -> CliResult<i32> {
     let flags = Flags::parse(args, &["v", "f", "t"])?;
     let key = flags
         .positional
@@ -150,30 +152,80 @@ fn cmd_query(args: &[String]) -> CliResult<()> {
     let only_value = flags.get("v");
     let default_only = flags.has("ve");
 
+    // Optional value-type filter (/t) and content search (/f).
+    let type_filter = match flags.get("t") {
+        Some(t) => Some(value::type_from_name(t).ok_or_else(|| CliError::usage(format!("unknown type {t}")))?),
+        None => None,
+    };
+    let filter = flags.get("f").map(|pattern| {
+        cli_core::search::Filter::new(pattern, flags.has("k"), flags.has("d"), flags.has("c"), flags.has("e"))
+    });
+
     let dumps = if recursive {
         session.dump_recursive(&in_hive)?
     } else {
         vec![session.dump_key(&in_hive)?]
     };
 
+    let mut match_count = 0usize;
     for d in &dumps {
-        // Reconstruct the full display path for this dumped key.
         let display = display_for(&regpath, &in_hive, &d.path);
-        println!("\n{display}");
-        for v in &d.values {
-            if let Some(want) = only_value {
-                if !v.name.eq_ignore_ascii_case(want) {
-                    continue;
+        // Values that pass the /v, /ve, and /t filters (independent of search).
+        let candidates: Vec<&cli_core::session::ValueDump> = d
+            .values
+            .iter()
+            .filter(|v| only_value.map(|want| v.name.eq_ignore_ascii_case(want)).unwrap_or(true))
+            .filter(|v| !default_only || v.name.is_empty())
+            .filter(|v| type_filter.map(|t| v.ty == t).unwrap_or(true))
+            .collect();
+
+        match &filter {
+            None => {
+                // Plain listing: print the key and its (filtered) values.
+                println!("\n{display}");
+                for v in &candidates {
+                    print_value_row(v);
                 }
             }
-            if default_only && !v.name.is_empty() {
-                continue;
+            Some(f) => {
+                // Search mode: print the key only if its name or one of its
+                // values matches, and count each match.
+                let key_name = display.rsplit('\\').next().unwrap_or(&display);
+                let key_hit = f.in_keys && f.text_matches(key_name);
+                let value_hits: Vec<&&cli_core::session::ValueDump> = candidates
+                    .iter()
+                    .filter(|v| {
+                        (f.in_value_names && f.text_matches(if v.name.is_empty() { "(Default)" } else { &v.name }))
+                            || (f.in_data && f.text_matches(&v.display()))
+                    })
+                    .collect();
+                if key_hit {
+                    match_count += 1;
+                }
+                match_count += value_hits.len();
+                if key_hit {
+                    // A key-name hit prints the key and all its values.
+                    println!("\n{display}");
+                    for v in &candidates {
+                        print_value_row(v);
+                    }
+                } else if !value_hits.is_empty() {
+                    println!("\n{display}");
+                    for v in &value_hits {
+                        print_value_row(v);
+                    }
+                }
             }
-            print_value_row(v);
         }
     }
+
+    if filter.is_some() {
+        println!("\nEnd of search: {match_count} match(es) found.");
+        // reg.exe returns 1 when a search finds nothing.
+        return Ok(if match_count == 0 { 1 } else { 0 });
+    }
     println!();
-    Ok(())
+    Ok(0)
 }
 
 fn print_value_row(v: &cli_core::session::ValueDump) {
@@ -487,7 +539,7 @@ fn apply_op(session: &mut Session, op: &RegOp, in_hive: &str) -> CliResult<()> {
 
 // ---- compare ---------------------------------------------------------------
 
-fn cmd_compare(args: &[String]) -> CliResult<()> {
+fn cmd_compare(args: &[String]) -> CliResult<i32> {
     let flags = Flags::parse(args, &["v"])?;
     let a = flags.positional.first().ok_or_else(|| CliError::usage("reg compare needs two keys"))?;
     let b = flags.positional.get(1).ok_or_else(|| CliError::usage("reg compare needs two keys"))?;
@@ -496,53 +548,78 @@ fn cmd_compare(args: &[String]) -> CliResult<()> {
     let sa = Session::open(&fa)?;
     let sb = Session::open(&fb)?;
 
-    let da = sa.dump_recursive(&pa)?;
-    let db = sb.dump_recursive(&pb)?;
+    // Output mode: /od differences (default), /os matches only, /oa all, /on none.
+    let show_diff = flags.has("oa") || flags.has("od") || !(flags.has("os") || flags.has("on"));
+    let show_same = flags.has("oa") || flags.has("os");
 
-    let mut differences = 0;
-    // Compare value sets at the top key only when not recursive; otherwise the
-    // dumps already cover the subtree. We compare relative paths.
+    // A non-recursive compare looks at the named keys only (their value sets);
+    // /s walks the whole subtree. dump_recursive already covers the subtree.
+    let dump = |s: &Session, base: &str| -> CliResult<Vec<cli_core::session::KeyDump>> {
+        if flags.has("s") {
+            s.dump_recursive(base)
+        } else {
+            Ok(vec![s.dump_key(base)?])
+        }
+    };
+    let da = dump(&sa, &pa)?;
+    let db = dump(&sb, &pb)?;
+
     let rel = |base: &str, p: &str| p.strip_prefix(base).unwrap_or(p).trim_start_matches('\\').to_string();
     use std::collections::BTreeMap;
-    let mut left: BTreeMap<String, Vec<(String, u32, Vec<u8>)>> = BTreeMap::new();
-    for d in &da {
-        left.insert(
-            rel(&pa, &d.path),
-            d.values.iter().map(|v| (v.name.to_uppercase(), v.ty, v.data.clone())).collect(),
-        );
-    }
-    let mut right: BTreeMap<String, Vec<(String, u32, Vec<u8>)>> = BTreeMap::new();
-    for d in &db {
-        right.insert(
-            rel(&pb, &d.path),
-            d.values.iter().map(|v| (v.name.to_uppercase(), v.ty, v.data.clone())).collect(),
-        );
-    }
+    type Vals = Vec<(String, u32, Vec<u8>)>;
+    let index = |dumps: &[cli_core::session::KeyDump], base: &str| -> BTreeMap<String, Vals> {
+        let mut m = BTreeMap::new();
+        for d in dumps {
+            m.insert(
+                rel(base, &d.path),
+                d.values.iter().map(|v| (v.name.to_uppercase(), v.ty, v.data.clone())).collect(),
+            );
+        }
+        m
+    };
+    let left = index(&da, &pa);
+    let right = index(&db, &pb);
+
+    let label = |k: &str| if k.is_empty() { "<top>".to_string() } else { k.to_string() };
+    let mut differences = 0;
     for (k, lv) in &left {
         match right.get(k) {
             None => {
-                println!("Only in {a}: {k}");
                 differences += 1;
+                if show_diff {
+                    println!("Only in {a}: {}", label(k));
+                }
             }
             Some(rv) if rv != lv => {
-                println!("Different values at: {k}");
                 differences += 1;
+                if show_diff {
+                    println!("Different values at: {}", label(k));
+                }
             }
-            _ => {}
+            Some(_) => {
+                if show_same {
+                    println!("Identical: {}", label(k));
+                }
+            }
         }
     }
     for k in right.keys() {
         if !left.contains_key(k) {
-            println!("Only in {b}: {k}");
             differences += 1;
+            if show_diff {
+                println!("Only in {b}: {}", label(k));
+            }
         }
     }
+
+    // reg.exe: "Result Compared" line, exit 0 identical / 2 different.
     if differences == 0 {
-        println!("The two key trees are identical.");
+        println!("Result Compared: Identical");
+        Ok(0)
     } else {
-        println!("{differences} difference(s) found.");
+        println!("Result Compared: Different");
+        Ok(2)
     }
-    Ok(())
 }
 
 fn print_usage() {
@@ -550,7 +627,7 @@ fn print_usage() {
         "reg (libreg) - offline registry tool\n\
          \n\
          Usage:\n\
-         \x20 reg query   <Key> [/v Name | /ve] [/s]\n\
+         \x20 reg query   <Key> [/v Name | /ve] [/s] [/f Pattern [/k|/d] [/c] [/e]] [/t Type]\n\
          \x20 reg add     <Key> [/v Name | /ve] [/t Type] [/d Data] [/s Sep] [/f]\n\
          \x20 reg delete  <Key> [/v Name | /ve | /va] [/f]\n\
          \x20 reg copy    <Src> <Dest> [/s] [/f]\n\
@@ -560,7 +637,7 @@ fn print_usage() {
          \x20 reg unload  <Key>\n\
          \x20 reg export  <Key> <File.reg>\n\
          \x20 reg import  <File.reg>\n\
-         \x20 reg compare <Key1> <Key2> [/s]\n\
+         \x20 reg compare <Key1> <Key2> [/s] [/oa|/od|/os|/on]   (exit 0 same, 2 different)\n\
          \n\
          Roots (HKLM, HKCU, ...) resolve to hive files via the mount map\n\
          ($LIBREG_HIVES or ~/.config/libreg/hives.conf). Use --hive <File> to\n\

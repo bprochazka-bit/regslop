@@ -10,6 +10,7 @@
 //! - [`value`]: the REG_* type codec (names, CLI data parsing, display).
 //! - [`regfile`]: import and export of the `.reg` text format.
 //! - [`sddl`]: convert key security between its binary form and SDDL text.
+//! - [`search`]: pattern matching for `reg query /f` searches.
 //! - [`session`]: open a hive file, resolve a path inside it, save it back.
 //! - [`structure`]: inspect a hive's on-disk format (base block, cell map).
 //!
@@ -20,6 +21,7 @@ pub mod mount;
 pub mod path;
 pub mod regfile;
 pub mod sddl;
+pub mod search;
 pub mod session;
 pub mod structure;
 pub mod value;

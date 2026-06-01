@@ -40,13 +40,21 @@ Everything below builds clean (`cargo build`), is clippy-clean
   whole subtree, copy subtrees, and save.
 
 ### reg
-- Subcommands: query (`/v` `/ve` `/s`), add (`/v` `/ve` `/t` `/d` `/s` `/f`),
-  delete (`/v` `/ve` `/va`, whole-key), copy (`/s`, same-file and cross-file),
-  save, restore, load, unload (manage mounts), export, import, compare.
+- Subcommands: query, add (`/v` `/ve` `/t` `/d` `/s` `/f`), delete
+  (`/v` `/ve` `/va`, whole-key), copy (`/s`, same-file and cross-file), save,
+  restore, load, unload (manage mounts), export, import, compare.
+- query supports `/v` `/ve` `/s`, a content search `/f Pattern` with scope
+  (`/k` keys, `/d` data, default keys+value-names+data), `/c` case-sensitive,
+  `/e` exact, and a `/t Type` filter. Search prints an "End of search: N
+  match(es)" line and exits 1 when nothing matches.
+- compare supports `/s` and the output modes `/oa` `/od` (default) `/os` `/on`,
+  prints "Result Compared: Identical/Different", and exits 0 when identical, 2
+  when different (matching reg.exe).
 - Switch parsing distinguishes reg.exe `/v` switches from Unix `/abs/paths`
   (a switch has no further `/` or `.` and is short).
 - Verified end to end: add/query(recursive)/export/import round trip, mount via
-  `reg load` then query through the mount map, value delete.
+  `reg load` then query through the mount map, value delete, `/f` searches with
+  scope/case/exact, `/t` filtering, and compare exit codes.
 
 ### sc (offline service config over a SYSTEM hive)
 - Verbs: create, config, delete, qc, query (static fields), description. The
@@ -111,8 +119,9 @@ Everything below builds clean (`cargo build`), is clippy-clean
    + cell map with db visualization, `/api/tree`, `/api/diff`, and the UI). A
    future refinement is decoding each cell's interior (nk name, vk type/value,
    sk refcount) on click, and a side-by-side value-level diff view.
-4. Flesh out `reg query` search flags (`/f` `/k` `/d` `/c` `/e`) and
-   `reg compare` output modes (`/oa` `/od` `/os` `/on`).
+4. `reg query` search flags (`/f` `/k` `/d` `/c` `/e` `/t`) and `reg compare`
+   output modes (`/oa` `/od` `/os` `/on`) with exit codes: DONE this session.
+   Remaining reg.exe flags are lower value (`/z`, `/se`, `/reg:32|64`).
 5. `.deb` packaging for reg/sc and a systemd unit + `.deb` for regedit-web
    (Debian-first rule 5).
 6. Per-tool unit/integration tests beyond cli-core (currently covered by
