@@ -1,6 +1,35 @@
 # Linux Agent: STATE
 
-Last updated: 2026-05-31
+Last updated: 2026-06-01
+
+## LibregBackend: first real libreg integration (latest session)
+
+libreg now exposes a usable `logical::Hive` API (read+write `regf` via
+`from_file_bytes`/`to_file`, plus `create_key`, `set_value`/`get_value`,
+`subkeys`/`values`, `key_security`, `resolve`), so the long-anticipated
+`LibregBackend` is now buildable. New `src/libreg_backend.rs`, selected with
+`--backend libreg` (default stays `mem`/`MemBackend`). Added a path dependency
+on the `libreg` crate (read-only use; coordination note in the PR).
+
+Scope of this first slice: hive lifecycle and key ops over real `regf` bytes,
+plus the canonical dump built by walking the logical tree into `model::Key` and
+reusing `canonical`. The agent enforces KEY_EXISTS at its edge (libreg's
+`create_key` is idempotent). Every key reports the ratified default descriptor
+(libreg assigns it).
+
+**First live libreg-vs-offreg differential** (`--backend libreg` vs offreg on
+the VM): lifecycle + keys are GREEN end to end. `deep_key_create`,
+`empty_hive_roundtrip`, `create_one_key_and_reload`, `key_create_existing_is_error`
+all pass semantic + structural + roundtrip, and **bytewise now compares two real
+regf implementations** (allocator divergence, a warning). The rest are RED for
+known reasons:
+
+- **libreg gaps (library agent):** no key delete, no key rename, no value
+  delete. These return INTERNAL "not yet supported"; the harness shows the
+  divergence vs offreg's KEY_NOT_FOUND / KEY_HAS_CHILDREN / success.
+- **Agent gaps (my next slices):** value set/get need a JSON<->(type,bytes)
+  codec (libreg's set_value/get_value take a REG_* code and raw bytes);
+  non-default security needs binary<->SDDL conversion and a libreg setter.
 
 ## CONTRACTS 0.1.3 to 0.1.6 conformance (latest session)
 
