@@ -11,6 +11,7 @@
 //! - [`regfile`]: import and export of the `.reg` text format.
 //! - [`sddl`]: convert key security between its binary form and SDDL text.
 //! - [`session`]: open a hive file, resolve a path inside it, save it back.
+//! - [`structure`]: inspect a hive's on-disk format (base block, cell map).
 //!
 //! The crate has no dependencies beyond `libreg` and the standard library.
 
@@ -20,6 +21,7 @@ pub mod path;
 pub mod regfile;
 pub mod sddl;
 pub mod session;
+pub mod structure;
 pub mod value;
 
 pub use error::{CliError, CliResult};

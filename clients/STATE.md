@@ -32,6 +32,10 @@ Everything below builds clean (`cargo build`), is clippy-clean
   (`agents/linux/src/sddl.rs`) so tokens match the harness/agents (ADR 0003).
   Built on libreg's public `format::security_descriptor` types. Round-trips the
   ratified default descriptor and custom owner/group/DACL forms.
+- `structure`: on-disk format inspection (base block fields, cell statistics,
+  and a cell map with signatures: nk/vk/sk/lf/lh/li/ri/db). Built on libreg's
+  public `format` layer, so it reads the real bytes of any hive (including
+  offreg-written ones). One unit test.
 - `session`: open a hive file into `libreg::logical::Hive`, dump a key or a
   whole subtree, copy subtrees, and save.
 
@@ -64,15 +68,19 @@ Everything below builds clean (`cargo build`), is clippy-clean
 - REST: `/api/roots`, `/api/key` (subkeys + typed values), `/api/validate`
   (libreg structural check), `/api/security` (GET returns SDDL plus the raw
   self-relative descriptor as hex, which Windows regedit does not surface),
-  `/api/setsecurity` (POST, edit permissions via SDDL), `/api/export` (.reg
-  download), and POST `/api/setvalue` `/api/deletevalue` `/api/createkey`
-  `/api/deletekey` (each opens the file, mutates, saves).
+  `/api/setsecurity` (POST, edit permissions via SDDL), `/api/structure`
+  (base block + cell map), `/api/tree` (recursive subtree dump), `/api/diff`
+  (compare two roots/subtrees), `/api/export` (.reg download), and POST
+  `/api/setvalue` `/api/deletevalue` `/api/createkey` `/api/deletekey` (each
+  opens the file, mutates, saves).
 - Single-page UI (`static/index.html`): lazy tree browser, value table with
-  add/edit/delete, new-key, validate, an editable SDDL permissions dialog, and
-  export-subtree.
+  add/edit/delete, new-key, validate, an editable SDDL permissions dialog, an
+  on-disk structure inspector (base block facts + scrollable cell map), a diff
+  dialog, and export-subtree.
 - Verified: server serves the UI and all read/validate/setvalue endpoints; a
-  POSTed value persists; security reads as SDDL, an edited SDDL persists to the
-  real hive and the hive still validates.
+  POSTed value persists; security reads as SDDL and an edited SDDL persists and
+  re-validates; the structure view shows base block + cells and visualizes a
+  big-data (db) cell from a 40KB value; diff reports added/removed keys.
 
 ## Assumptions
 
@@ -99,9 +107,10 @@ Everything below builds clean (`cargo build`), is clippy-clean
    module + `/api/security` GET returning SDDL + `/api/setsecurity` POST + an
    editable dialog). A future refinement is a structured ACE table editor
    instead of a raw SDDL text field, and rendering the SACL when present.
-3. regedit structure inspector: surface the hbin/cell walk and big-data (db)
-   layout (libreg's format layer can drive this); add a canonical-dump and
-   two-hive diff view.
+3. regedit structure inspector: DONE this session (`/api/structure` base block
+   + cell map with db visualization, `/api/tree`, `/api/diff`, and the UI). A
+   future refinement is decoding each cell's interior (nk name, vk type/value,
+   sk refcount) on click, and a side-by-side value-level diff view.
 4. Flesh out `reg query` search flags (`/f` `/k` `/d` `/c` `/e`) and
    `reg compare` output modes (`/oa` `/od` `/os` `/on`).
 5. `.deb` packaging for reg/sc and a systemd unit + `.deb` for regedit-web

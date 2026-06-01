@@ -117,6 +117,9 @@ fn dispatch(state: &AppState, req: &Request) -> Response {
         ("GET", "/api/roots") => api_roots(state),
         ("GET", "/api/key") => api_key(state, &req.query),
         ("GET", "/api/validate") => api_validate(state, &req.query),
+        ("GET", "/api/structure") => api_structure(state, &req.query),
+        ("GET", "/api/tree") => api_tree(state, &req.query),
+        ("GET", "/api/diff") => api_diff(state, &req.query),
         ("GET", "/api/security") => api_security(state, &req.query),
         ("POST", "/api/setsecurity") => api_setsecurity(state, &req.form),
         ("GET", "/api/export") => return api_export(state, &req.query),
@@ -187,6 +190,127 @@ fn api_validate(state: &AppState, q: &HashMap<String, String>) -> CliResult<Stri
     Ok(json::object(&[
         ("valid", valid.to_string()),
         ("problems", json::string_array(&problems)),
+    ]))
+}
+
+fn api_structure(state: &AppState, q: &HashMap<String, String>) -> CliResult<String> {
+    let file = file_for(state, param(q, "root"))?;
+    let st = cli_core::structure::inspect(file)?;
+    let b = &st.base;
+    let base = json::object(&[
+        ("magic_ok", b.magic_ok.to_string()),
+        ("primary_seq", b.primary_seq.to_string()),
+        ("secondary_seq", b.secondary_seq.to_string()),
+        ("clean", b.clean.to_string()),
+        ("major_version", b.major_version.to_string()),
+        ("minor_version", b.minor_version.to_string()),
+        ("root_offset", b.root_offset.to_string()),
+        ("hbins_size", b.hbins_size.to_string()),
+        ("checksum_valid", b.checksum_valid.to_string()),
+        ("file_size", b.file_size.to_string()),
+    ]);
+    let stats = json::object(&[
+        ("hbins", st.stats.hbins.to_string()),
+        ("allocated", st.stats.allocated.to_string()),
+        ("free", st.stats.free.to_string()),
+        ("total_cell_bytes", st.stats.total_cell_bytes.to_string()),
+    ]);
+    let cells: Vec<String> = st
+        .cells
+        .iter()
+        .map(|c| {
+            json::object(&[
+                ("offset", c.offset.to_string()),
+                ("size", c.size.to_string()),
+                ("allocated", c.allocated.to_string()),
+                ("sig", c.signature.as_ref().map(|s| json::string(s)).unwrap_or_else(|| "null".into())),
+            ])
+        })
+        .collect();
+    Ok(json::object(&[
+        ("base", base),
+        ("stats", stats),
+        ("cells", format!("[{}]", cells.join(","))),
+        ("cells_truncated", st.cells_truncated.to_string()),
+        ("walk_error", st.walk_error.as_ref().map(|e| json::string(e)).unwrap_or_else(|| "null".into())),
+    ]))
+}
+
+fn api_tree(state: &AppState, q: &HashMap<String, String>) -> CliResult<String> {
+    let file = file_for(state, param(q, "root"))?;
+    let path = param(q, "path");
+    let session = Session::open(file)?;
+    build_tree(&session, path)
+}
+
+/// Build a recursive JSON dump of the subtree at `path` (name, values, subkeys).
+fn build_tree(session: &Session, path: &str) -> CliResult<String> {
+    let dump = session.dump_key(path)?;
+    let name = path.rsplit('\\').next().unwrap_or("").to_string();
+    let values: Vec<String> = dump
+        .values
+        .iter()
+        .map(|v| {
+            json::object(&[
+                ("name", json::string(&v.name)),
+                ("type", json::string(value::type_name(v.ty))),
+                ("display", json::string(&v.display())),
+            ])
+        })
+        .collect();
+    let mut subtrees = Vec::new();
+    for sub in &dump.subkeys {
+        let child = if path.is_empty() { sub.clone() } else { format!("{path}\\{sub}") };
+        subtrees.push(build_tree(session, &child)?);
+    }
+    Ok(json::object(&[
+        ("name", json::string(&name)),
+        ("path", json::string(path)),
+        ("values", format!("[{}]", values.join(","))),
+        ("subkeys", format!("[{}]", subtrees.join(","))),
+    ]))
+}
+
+fn api_diff(state: &AppState, q: &HashMap<String, String>) -> CliResult<String> {
+    let fa = file_for(state, param(q, "root_a"))?.clone();
+    let fb = file_for(state, param(q, "root_b"))?.clone();
+    let pa = param(q, "path_a");
+    let pb = param(q, "path_b");
+    let sa = Session::open(&fa)?;
+    let sb = Session::open(&fb)?;
+
+    use std::collections::BTreeMap;
+    type Vals = Vec<(String, u32, Vec<u8>)>;
+    let rel = |base: &str, p: &str| p.strip_prefix(base).unwrap_or(p).trim_start_matches('\\').to_string();
+    let collect = |s: &Session, base: &str| -> CliResult<BTreeMap<String, Vals>> {
+        let mut m = BTreeMap::new();
+        for d in s.dump_recursive(base)? {
+            m.insert(
+                rel(base, &d.path),
+                d.values.iter().map(|v| (v.name.to_uppercase(), v.ty, v.data.clone())).collect(),
+            );
+        }
+        Ok(m)
+    };
+    let left = collect(&sa, pa)?;
+    let right = collect(&sb, pb)?;
+
+    let mut diffs: Vec<String> = Vec::new();
+    for (k, lv) in &left {
+        match right.get(k) {
+            None => diffs.push(format!("only in A: {}", if k.is_empty() { "(root)" } else { k })),
+            Some(rv) if rv != lv => diffs.push(format!("values differ: {}", if k.is_empty() { "(root)" } else { k })),
+            _ => {}
+        }
+    }
+    for k in right.keys() {
+        if !left.contains_key(k) {
+            diffs.push(format!("only in B: {}", if k.is_empty() { "(root)" } else { k }));
+        }
+    }
+    Ok(json::object(&[
+        ("identical", diffs.is_empty().to_string()),
+        ("differences", json::string_array(&diffs)),
     ]))
 }
 

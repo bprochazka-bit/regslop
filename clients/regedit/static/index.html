@@ -46,7 +46,9 @@
   <b>libreg regedit</b>
   <span class="spacer"></span>
   <button class="ghost" onclick="validateHive()">Validate</button>
+  <button class="ghost" onclick="showStructure()">Structure</button>
   <button class="ghost" onclick="showSecurity()">Security</button>
+  <button class="ghost" onclick="diffRoots()">Diff</button>
   <button class="ghost" onclick="exportSubtree()">Export .reg</button>
   <button onclick="newKey()">New Key</button>
   <button onclick="newValue()">New Value</button>
@@ -243,6 +245,55 @@ async function showSecurity() {
       setStatus("Security descriptor updated.");
     });
   } catch (e) { setStatus(e.message, true); }
+}
+
+// A read-only modal: fill the dialog body with HTML and just close on OK.
+function infoModal(title, html) {
+  const body = document.getElementById("dlgBody");
+  body.innerHTML = "<h3 style='margin-top:0'>"+esc(title)+"</h3>" + html;
+  document.getElementById("dlgOk").onclick = () => {};
+  document.getElementById("dlg").showModal();
+}
+function row(k, v){ return "<tr><td class='name'>"+esc(k)+"</td><td>"+esc(String(v))+"</td></tr>"; }
+function hex(n){ return "0x"+(Number(n)>>>0).toString(16); }
+
+async function showStructure() {
+  if (!requireKey()) return;
+  try {
+    const j = await api("/api/structure", { root: state.root });
+    const b = j.base, s = j.stats;
+    let html = "<table>"+
+      row("Signature", b.magic_ok ? "regf (valid)" : "INVALID")+
+      row("Version", b.major_version+"."+b.minor_version)+
+      row("Sequences", b.primary_seq+" / "+b.secondary_seq+(b.clean?" (clean)":" (DIRTY)"))+
+      row("Checksum", b.checksum_valid ? "valid" : "INVALID")+
+      row("Root cell", hex(b.root_offset))+
+      row("Bins size", b.hbins_size+" bytes")+
+      row("File size", b.file_size+" bytes")+
+      row("Hbins", s.hbins)+
+      row("Cells", s.allocated+" allocated, "+s.free+" free ("+s.total_cell_bytes+" bytes)")+
+      "</table>";
+    html += "<h3 style='margin:10px 0 4px'>Cell map"+(j.cells_truncated?" (truncated)":"")+"</h3>";
+    html += "<div style='max-height:300px;overflow:auto'><table><thead><tr><th>Offset</th><th>Size</th><th>State</th><th>Type</th></tr></thead><tbody>";
+    for (const c of j.cells)
+      html += "<tr><td class='data'>"+hex(c.offset)+"</td><td>"+c.size+"</td><td>"+(c.allocated?"alloc":"free")+"</td><td class='type'>"+(c.sig||"")+"</td></tr>";
+    html += "</tbody></table></div>";
+    if (j.walk_error) html += "<p style='color:#f48771'>walk stopped: "+esc(j.walk_error)+"</p>";
+    infoModal("On-disk structure: " + state.root, html);
+  } catch (e) { setStatus(e.message, true); }
+}
+
+function diffRoots() {
+  if (!requireKey()) return;
+  dialog("Diff " + (state.path || state.root) + " against...", [
+    {id:"root",label:"Other root",type:"select",options:state.roots,value:state.root},
+    {id:"path",label:"Other key path (blank = that root)",value:state.path},
+  ], async f => {
+    const j = await api("/api/diff", { root_a: state.root, path_a: state.path, root_b: f.root, path_b: f.path });
+    if (j.identical === true || j.identical === "true") { setStatus("The two key trees are identical."); return; }
+    const html = "<p>"+j.differences.length+" difference(s):</p><ul>"+j.differences.map(d=>"<li>"+esc(d)+"</li>").join("")+"</ul>";
+    infoModal("Diff result", html);
+  });
 }
 
 function exportSubtree() {
