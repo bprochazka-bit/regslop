@@ -11,20 +11,25 @@ mod backend;
 mod canonical;
 mod error;
 mod handlers;
+mod libreg_backend;
 mod model;
 
 use backend::{Backend, MemBackend};
+use libreg_backend::LibregBackend;
 use serde_json::{json, Value as J};
 use std::sync::Arc;
 
 struct Config {
     port: u16,
     backend_id: String,
+    /// "mem" (in-memory stand-in, default) or "libreg" (real libreg crate).
+    backend: String,
 }
 
 fn parse_args() -> Config {
     let mut port = 7878u16;
     let mut backend_id = "libreg-0.1.0".to_string();
+    let mut backend = "mem".to_string();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -37,14 +42,20 @@ fn parse_args() -> Config {
             "--backend-id" => {
                 backend_id = args.next().unwrap_or_else(|| fatal("--backend-id needs a value"));
             }
+            "--backend" => {
+                backend = args.next().unwrap_or_else(|| fatal("--backend needs a value (mem|libreg)"));
+                if backend != "mem" && backend != "libreg" {
+                    fatal("--backend must be 'mem' or 'libreg'");
+                }
+            }
             "-h" | "--help" => {
-                eprintln!("libreg-agent-linux [--port N] [--backend-id ID]");
+                eprintln!("libreg-agent-linux [--port N] [--backend-id ID] [--backend mem|libreg]");
                 std::process::exit(0);
             }
             other => fatal(&format!("unknown argument: {other}")),
         }
     }
-    Config { port, backend_id }
+    Config { port, backend_id, backend }
 }
 
 fn fatal(msg: &str) -> ! {
@@ -59,10 +70,14 @@ fn main() {
         Ok(s) => Arc::new(s),
         Err(e) => fatal(&format!("cannot bind {addr}: {e}")),
     };
-    let backend: Arc<dyn Backend> = Arc::new(MemBackend::new(cfg.backend_id.clone()));
+    let backend: Arc<dyn Backend> = match cfg.backend.as_str() {
+        "libreg" => Arc::new(LibregBackend::new(cfg.backend_id.clone())),
+        _ => Arc::new(MemBackend::new(cfg.backend_id.clone())),
+    };
     eprintln!(
-        "libreg-agent-linux listening on {addr} (agent=linux, protocol={}, backend={})",
+        "libreg-agent-linux listening on {addr} (agent=linux, protocol={}, backend-impl={}, backend={})",
         canonical::FORMAT_VERSION,
+        cfg.backend,
         cfg.backend_id
     );
 
