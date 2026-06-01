@@ -2,12 +2,32 @@
 
 Last updated: 2026-05-31 (library agent)
 
-Merge state: steps 1-8 plus the offreg-alignment pass are on main (allocator
-#27, key create #33, value set #37, offreg-align #41, step 6 read #44, step 8
-ri-promote #45, step 7 delete #47, all MERGED). THIS session (branch
-`agent/library-bigdata` off main) implements step 9: big-data (db) cells, so
-values larger than 16344 bytes can be stored. After this, steps 1-9 are done;
-only step 11 (transaction logs) and the bytewise-parity polish remain.
+Merge state: steps 1-10 plus the offreg-alignment pass and security get/set
+are on main (allocator #27, key create #33, value set #37, offreg-align #41,
+step 6 read #44, step 8 ri-promote #45, step 7 delete #47, step 9 big-data
+#53, set_key_security #57, all MERGED). The core mutation surface is complete.
+
+THIS session (branch `agent/library-load-robustness` off main): LOAD-PATH
+HARDENING + validation, prompted by reading the linux agent's libreg_backend.
+- `from_file_bytes` used to slice `file[BASE_BLOCK_SIZE..end]` where `end`
+  comes from the hive's own (corruption-controlled) `hbins_size` field, so a
+  truncated/malformed hive PANICKED. Now it bounds-checks `end` and verifies
+  the root cell frames a valid nk (bounds-safe `Cell::parse_at`), returning a
+  `Format` error instead. This protects the agent's hive_load and the fuzz/
+  corpus tags.
+- `Hive::validate() -> Vec<String>` (empty = valid): the offline structural
+  check behind `GET /hive/validate` (the agent currently stubs it). Walks the
+  cells (invariants 5/6/9/10) and checks the root nk.
+- Tests: truncated and bogus-root hives are rejected (not panic); a real hive
+  round-trips; validate passes for valid hives and flags a hive whose sk cell
+  size is zeroed (loads but fails the walk).
+- NOTE: this does not make EVERY operation panic-proof on arbitrary malformed
+  interiors (a walk-clean hive can still hold a bogus interior offset that
+  `image.content` would index out of bounds). Full panic-safety would mean
+  bounds-checking `HiveImage::content`; deferred. The common corruptions
+  (truncation, bad root) are now safe.
+
+----- step 9 (big-data) section below; earlier sessions further down -----
 
 STEP 9 (this session): values over 16344 bytes use a db cell.
 - `format/db.rs` (Layer 0): the db record (signature, segment count, segment-

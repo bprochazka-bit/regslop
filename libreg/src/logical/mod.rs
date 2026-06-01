@@ -76,18 +76,63 @@ impl Hive {
     /// hive bins data with the allocator.
     pub fn from_file_bytes(file: &[u8]) -> Result<Hive, LogicalError> {
         let bb = BaseBlock::parse(file)?;
+        // The base block's hbins_size field is attacker/corruption controlled,
+        // so bound it against the actual file before slicing (a malformed hive
+        // must error, not panic).
         let end = BASE_BLOCK_SIZE + bb.hbins_size as usize;
+        if end > file.len() {
+            return Err(LogicalError::Format(FormatError::OutOfBounds {
+                structure: "hive bins data",
+                offset: BASE_BLOCK_SIZE,
+                need: bb.hbins_size as usize,
+                available: file.len().saturating_sub(BASE_BLOCK_SIZE),
+            }));
+        }
         let bins = file[BASE_BLOCK_SIZE..end].to_vec();
-        Ok(Hive {
+        let hive = Hive {
             image: HiveImage::from_bins(bins),
             root_offset: bb.root_cell_offset,
             last_written: bb.last_written,
-        })
+        };
+        // The root offset must frame a real nk, or every later operation that
+        // dereferences it would fault. Cell::parse_at is bounds-safe.
+        hive.check_root()?;
+        Ok(hive)
     }
 
     /// Serialize the hive back to a complete file (base block + bins).
     pub fn to_file(&self) -> Vec<u8> {
         self.image.to_hive_file(self.root_offset, self.last_written)
+    }
+
+    /// Check the root offset frames a valid nk. Uses the bounds-safe cell
+    /// framer so a bogus offset returns an error rather than panicking.
+    fn check_root(&self) -> Result<(), LogicalError> {
+        let cell =
+            crate::format::cell::Cell::parse_at(self.image.bins(), self.root_offset as usize)?;
+        crate::format::nk::KeyNode::parse(cell.data)?;
+        Ok(())
+    }
+
+    /// Structural validation of the hive: a list of problem descriptions
+    /// (empty means valid). Checks the cell walk (invariants 5, 6, 9, 10) and
+    /// that the root cell frames an nk. This is the offline structural check
+    /// behind `GET /hive/validate`; deeper differential checks are the
+    /// harness's job.
+    pub fn validate(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        if let Err(e) = crate::format::hbin::walk(self.image.bins()) {
+            problems.push(format!("cell walk failed: {e}"));
+        }
+        match crate::format::cell::Cell::parse_at(self.image.bins(), self.root_offset as usize) {
+            Ok(cell) => {
+                if let Err(e) = crate::format::nk::KeyNode::parse(cell.data) {
+                    problems.push(format!("root is not a valid nk: {e}"));
+                }
+            }
+            Err(e) => problems.push(format!("root cell invalid: {e}")),
+        }
+        problems
     }
 
     /// Offset of the root key node.
@@ -987,5 +1032,60 @@ mod tests {
 
         let reloaded = Hive::from_file_bytes(&hive.to_file()).unwrap();
         assert_eq!(reloaded.key_security("A").unwrap(), custom);
+    }
+
+    #[test]
+    fn from_file_bytes_rejects_truncated_bins() {
+        // The base block claims a 4096-byte hbin but only 100 bytes follow.
+        let bytes = Hive::new_empty().to_file();
+        let truncated = &bytes[..BASE_BLOCK_SIZE + 100];
+        assert!(matches!(
+            Hive::from_file_bytes(truncated),
+            Err(LogicalError::Format(_))
+        ));
+    }
+
+    #[test]
+    fn from_file_bytes_rejects_bogus_root_offset() {
+        let mut bytes = Hive::new_empty().to_file();
+        // Root cell offset lives at base block offset 36; point it past the bins.
+        bytes[36..40].copy_from_slice(&0x00ff_ffffu32.to_le_bytes());
+        assert!(matches!(
+            Hive::from_file_bytes(&bytes),
+            Err(LogicalError::Format(_))
+        ));
+    }
+
+    #[test]
+    fn from_file_bytes_round_trips_a_real_hive() {
+        let mut hive = Hive::new_empty();
+        hive.create_key("Software\\App").unwrap();
+        let reloaded = Hive::from_file_bytes(&hive.to_file()).unwrap();
+        assert_eq!(reloaded.subkeys("Software").unwrap(), vec!["App"]);
+    }
+
+    #[test]
+    fn validate_passes_for_valid_hives() {
+        let mut hive = Hive::new_empty();
+        assert!(hive.validate().is_empty(), "empty: {:?}", hive.validate());
+        hive.create_key("A\\B").unwrap();
+        hive.set_value("A", "v", REG_DWORD, &1u32.to_le_bytes())
+            .unwrap();
+        assert!(
+            hive.validate().is_empty(),
+            "populated: {:?}",
+            hive.validate()
+        );
+    }
+
+    #[test]
+    fn validate_flags_structural_corruption() {
+        // Root stays intact (so it loads), but the sk cell's size is zeroed,
+        // which the cell walk catches.
+        let mut bytes = Hive::new_empty().to_file();
+        let sk_size_field = BASE_BLOCK_SIZE + 0x78; // sk cell at bins offset 0x78
+        bytes[sk_size_field..sk_size_field + 4].copy_from_slice(&0u32.to_le_bytes());
+        let hive = Hive::from_file_bytes(&bytes).expect("loads, root still valid");
+        assert!(!hive.validate().is_empty(), "walk corruption flagged");
     }
 }
