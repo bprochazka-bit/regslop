@@ -2,6 +2,30 @@
 
 Last updated: 2026-06-01
 
+## Recovery: /test/crash_save + log-backed save/load (ADR 0004, issue #61)
+
+libreg shipped `log::{crash_save_plan, recover, CrashPoint, Slot}`, so the
+LibregBackend now goes through the transaction-log path:
+
+- `hive_save` -> `crash_save_plan(AfterPrimary)`: journals the new generation to
+  the alternating log slot, then commits the primary (advancing the
+  generation). Writes P, P.LOG1, P.LOG2.
+- `hive_load` -> `recover(P, P.LOG1, P.LOG2)`: picks the highest valid
+  generation and replays a log if the primary is stale (a clean hive recovers
+  to itself).
+- New test-only `POST /test/crash_save { handle, point }` -> `crash_save_plan(point)`
+  with point in {after_first_log, after_log_before_primary, after_primary}.
+  `apply_plan` writes each (Slot, bytes) to the primary / .LOG1 / .LOG2; a crash
+  point omits the primary, leaving the on-disk state mid-save. MemBackend
+  returns "only the libreg backend supports it" (no logs).
+
+Verified manually for all three points: build -> save -> mutate M ->
+crash_save(point) -> close -> load -> dump recovers baseline+M (the
+logged-but-not-committed write survives). The existing libreg-vs-offreg
+differential stays GREEN (17/17 semantic, 10/10 structural, 8/8 roundtrip) with
+the new save/load path. /test/crash_save is not yet in CONTRACTS; the spec agent
+adds it (MINOR, Linux-only) once the harness drives `recovery` green (ADR 0004).
+
 ## LibregBackend path validation (latest)
 
 The new BAD_REQUEST coverage test caught that `LibregBackend` accepted a
