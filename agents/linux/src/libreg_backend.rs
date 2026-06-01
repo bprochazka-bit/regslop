@@ -329,8 +329,12 @@ impl Backend for LibregBackend {
     }
 
     fn validate(&self, handle: &str) -> Result<Validation> {
-        // Structural validation of the bytes is the harness's job (check_bytes);
-        // here we report a clean verdict for a hive libreg just serialized.
-        self.with(handle, |_| Ok(Validation { valid: true, errors: Vec::new(), warnings: Vec::new() }))
+        // Defer to libreg's own structural self-check (cell walk + root nk
+        // parse), which returns a list of problems (empty means valid). This
+        // backs the harness's invariant 18 with a real verdict.
+        self.with(handle, |e| {
+            let problems = e.hive.validate();
+            Ok(Validation { valid: problems.is_empty(), errors: problems, warnings: Vec::new() })
+        })
     }
 }
