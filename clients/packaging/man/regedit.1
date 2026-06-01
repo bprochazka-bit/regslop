@@ -1,0 +1,55 @@
+.TH REGEDIT 1 "2026-06-01" "libreg 0.1.0" "User Commands"
+.SH NAME
+regedit \- web-based offline registry editor
+.SH SYNOPSIS
+.B regedit
+.RB [ \-\-port
+.IR N ]
+.RB [ \-\-bind
+.IR ADDR ]
+.RB [ \-\-hive
+.IR FILE
+.RB [ \-\-root
+.IR LABEL ]]
+.SH DESCRIPTION
+.B regedit
+serves a browser based registry editor for offline hive files, modeled on the
+Windows registry editor. It offers the same browsing and editing (keys, values
+of every REG type, import and export of
+.B .reg
+files) plus features the core library exposes that the Windows editor does
+not: editable SDDL security descriptors, hive structural validation, an on-disk
+structure inspector (base block fields and a cell map), and a two-hive diff.
+.PP
+Hives come from the mount map (see
+.BR reg (1)),
+or a single
+.B \-\-hive
+.I FILE
+can be served under
+.B \-\-root
+.I LABEL
+(default HKEY_LOCAL_MACHINE). Each request opens the hive file, performs its
+operation, and saves on edit, so changes persist immediately.
+.SH OPTIONS
+.TP
+.BI \-\-port " N"
+TCP port to listen on (default 7890).
+.TP
+.BI \-\-bind " ADDR"
+Address to bind (default 127.0.0.1).
+.TP
+.BI \-\-hive " FILE"
+Serve a single hive file instead of the mount map.
+.TP
+.BI \-\-root " LABEL"
+Root label for the
+.B \-\-hive
+file.
+.SH SECURITY
+.B regedit
+performs no authentication and edits hive files directly. Bind it to a loopback
+or trusted interface only. The packaged systemd unit binds 127.0.0.1 by default.
+.SH SEE ALSO
+.BR reg (1),
+.BR sc (1)

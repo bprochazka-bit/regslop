@@ -1,0 +1,103 @@
+.TH REG 1 "2026-06-01" "libreg 0.1.0" "User Commands"
+.SH NAME
+reg \- offline Windows registry tool
+.SH SYNOPSIS
+.B reg
+.I operation
+.RI [ key ]
+.RI [ arguments ]
+.SH DESCRIPTION
+.B reg
+reads and edits Windows registry hive files on Linux, modeled on the Windows
+.BR reg.exe .
+There is no live registry on Linux, so registry roots (HKLM, HKCU, and the
+others) are mapped to hive files through a mount map (see
+.BR FILES ).
+A
+.B \-\-hive
+.I FILE
+option overrides the map for one off files.
+.SH OPERATIONS
+.TP
+.BI "reg query " "Key " "[/v Name | /ve] [/s] [/f Pattern [/k|/d] [/c] [/e]] [/t Type]"
+Print a key, its values, and optionally its subtree
+.RB ( /s ).
+With
+.B /f
+the subtree is searched for
+.IR Pattern :
+.B /k
+restricts the search to key names,
+.B /d
+to value data, the default searches key names, value names, and data.
+.B /c
+is case sensitive,
+.B /e
+requires an exact match, and
+.B /t
+restricts to a value type. A search exits with status 1 if nothing matched.
+.TP
+.BI "reg add " "Key " "[/v Name | /ve] [/t Type] [/d Data] [/s Sep] [/f]"
+Create a key, and optionally set a value. Without
+.B /f
+an existing value is not overwritten.
+.TP
+.BI "reg delete " "Key " "[/v Name | /ve | /va] [/f]"
+Delete a value, all values
+.RB ( /va ),
+or the whole key.
+.TP
+.BI "reg copy " "Src Dest " "[/s] [/f]"
+Copy a key (and with
+.B /s
+its subtree) within or across hives.
+.TP
+.BI "reg save " "Key File"
+Write a key and its subtree to a new hive file.
+.TP
+.BI "reg restore " "Key File"
+Replace a key with the contents of a hive file.
+.TP
+.BI "reg load " "Key File"
+Mount a hive file at
+.I Key
+(adds a mount-map entry).
+.TP
+.BI "reg unload " "Key"
+Remove a mount-map entry.
+.TP
+.BI "reg export " "Key File"
+Write a key and its subtree to a
+.B .reg
+file (UTF-16LE).
+.TP
+.BI "reg import " "File"
+Apply a
+.B .reg
+file.
+.TP
+.BI "reg compare " "Key1 Key2 " "[/s] [/oa|/od|/os|/on]"
+Compare two keys. Output modes:
+.B /od
+differences (default),
+.B /os
+matches,
+.B /oa
+all,
+.B /on
+none. Exit status is 0 when identical and 2 when different.
+.SH FILES
+.TP
+.B $LIBREG_HIVES
+Path to the mount map, if set.
+.TP
+.B ~/.config/libreg/hives.conf
+Default mount map. Each line is
+.IR "ROOT\esubpath = /path/to/hive" .
+.SH EXIT STATUS
+0 on success, 1 on error or an empty search, 2 when
+.B reg compare
+finds differences.
+.SH SEE ALSO
+.BR sc (1),
+.BR regedit (1)

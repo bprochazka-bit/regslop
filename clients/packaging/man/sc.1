@@ -1,0 +1,69 @@
+.TH SC 1 "2026-06-01" "libreg 0.1.0" "User Commands"
+.SH NAME
+sc \- offline Windows service configuration tool
+.SH SYNOPSIS
+.B sc
+.I command
+.RI [ service ]
+.RI [ options ]
+.SH DESCRIPTION
+.B sc
+edits Windows service definitions stored in a registry
+.B SYSTEM
+hive, modeled on the Windows
+.BR sc.exe .
+Services live under
+.IR "HKLM\eSYSTEM\e<ControlSet>\eServices\e<name>" .
+Because there is no running Service Control Manager on Linux, only the static,
+registry-backed verbs are supported. The runtime verbs
+.RB ( start ,
+.BR stop ,
+.BR pause ,
+.BR continue )
+report that they are not available offline.
+.PP
+The SYSTEM hive is found through the
+.B HKLM\eSYSTEM
+mount-map entry, or a
+.B \-\-hive
+.I FILE
+override. The control set defaults to
+.B ControlSet001
+and is selected with
+.B \-\-controlset
+.IR N .
+.SH COMMANDS
+.TP
+.BI "sc create " "name " "binPath= path [type= ...] [start= ...] [error= ...] [DisplayName= ...] [depend= a/b] [obj= ...] [group= ...]"
+Create a service key with the given configuration. Note the
+.BR "key= value"
+form: a space follows the equals sign, as in
+.BR sc.exe .
+.TP
+.BI "sc config " "name " "[options]"
+Change an existing service's configuration.
+.TP
+.BI "sc delete " "name"
+Delete a service.
+.TP
+.BI "sc qc " "name"
+Print a service's configuration.
+.TP
+.BI "sc query " "[name]"
+List services or print one. The dynamic run state is not available offline.
+.TP
+.BI "sc description " "name text"
+Set a service's description.
+.SH OPTION VALUES
+.TP
+.B type=
+own, share, kernel, filesys, rec, interact, userown, usershare.
+.TP
+.B start=
+boot, system, auto, demand, disabled.
+.TP
+.B error=
+ignore, normal, severe, critical.
+.SH SEE ALSO
+.BR reg (1),
+.BR regedit (1)

@@ -70,6 +70,17 @@ Everything below builds clean (`cargo build`), is clippy-clean
 - Verified: create/qc/config/query/delete, and `reg query` reads the exact
   REG values sc wrote (same real regf hive, cross-tool interop confirmed).
 
+### packaging (Debian-first, rule 5)
+- `packaging/build-deb.sh` builds two `.deb` packages with `dpkg-deb` only (no
+  external tooling): `libreg-tools` (reg, sc, man pages, example mount map) and
+  `libreg-regedit` (regedit, man page, systemd unit, `/etc/libreg/regedit.conf`
+  conffile, `/var/lib/libreg`). Man pages in `packaging/man/`, the unit and
+  config in `packaging/systemd` and `packaging/conf`.
+- Verified: both packages build, install via `dpkg -i`, the installed
+  `/usr/bin/reg` and `/usr/bin/sc` run, the unit and conffile land correctly,
+  and the packages remove cleanly. The regedit package does not auto-start the
+  service (no auth; loopback bind by default; enable with systemctl when ready).
+
 ### regedit (web)
 - Standalone server (std-only HTTP in `http.rs`, std-only JSON in `json.rs`),
   links libreg through cli-core. Roots come from the mount map or `--hive`.
@@ -122,7 +133,8 @@ Everything below builds clean (`cargo build`), is clippy-clean
 4. `reg query` search flags (`/f` `/k` `/d` `/c` `/e` `/t`) and `reg compare`
    output modes (`/oa` `/od` `/os` `/on`) with exit codes: DONE this session.
    Remaining reg.exe flags are lower value (`/z`, `/se`, `/reg:32|64`).
-5. `.deb` packaging for reg/sc and a systemd unit + `.deb` for regedit-web
-   (Debian-first rule 5).
+5. `.deb` packaging for reg/sc and a systemd unit + `.deb` for regedit:
+   DONE this session (`packaging/`). Future: CI to build and attach the debs,
+   and a source package (debian/ dir) if upstreaming to a Debian repo.
 6. Per-tool unit/integration tests beyond cli-core (currently covered by
    end-to-end smoke runs).
