@@ -1,0 +1,25 @@
+[Unit]
+Description=libreg web registry editor (regedit)
+Documentation=man:regedit(1)
+After=network.target
+
+[Service]
+Type=simple
+# Options live in /etc/libreg/regedit.conf (PORT, BIND, and EXTRA_ARGS).
+EnvironmentFile=-/etc/libreg/regedit.conf
+ExecStart=/usr/bin/regedit --bind ${BIND} --port ${PORT} $EXTRA_ARGS
+Restart=on-failure
+RestartSec=2
+
+# regedit edits hive files and has no authentication, so keep it locked down.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+# Allow reading the mount map and the hives it points at by giving the service
+# read access where operators place them; widen ReadWritePaths as needed.
+ReadWritePaths=/var/lib/libreg
+
+[Install]
+WantedBy=multi-user.target

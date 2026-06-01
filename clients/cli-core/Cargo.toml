@@ -1,0 +1,13 @@
+[package]
+name = "cli-core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared core for the libreg client utilities (reg, sc, regedit)"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "cli_core"
+path = "src/lib.rs"
+
+[dependencies]
+libreg = { path = "../../libreg" }

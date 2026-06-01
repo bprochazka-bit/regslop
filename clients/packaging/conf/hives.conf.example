@@ -1,0 +1,12 @@
+# Example libreg mount map.
+#
+# Copy to ~/.config/libreg/hives.conf (or point $LIBREG_HIVES at it) and edit.
+# Each line binds a registry root, or a subpath under one, to a hive file.
+# Resolution uses the longest matching prefix, so a SYSTEM hive mounted at
+# HKLM\SYSTEM makes "reg query HKLM\SYSTEM\CurrentControlSet\..." work verbatim.
+#
+# Lines are "ROOT\subpath = /path/to/hive". '#' starts a comment.
+
+# HKEY_LOCAL_MACHINE\SYSTEM   = /var/lib/libreg/SYSTEM
+# HKEY_LOCAL_MACHINE\SOFTWARE = /var/lib/libreg/SOFTWARE
+# HKEY_CURRENT_USER           = /var/lib/libreg/NTUSER.DAT

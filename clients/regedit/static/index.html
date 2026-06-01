@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>libreg regedit</title>
+<style>
+  :root { --bg:#1e1e1e; --panel:#252526; --line:#3c3c3c; --fg:#d4d4d4; --accent:#0e639c; --sel:#094771; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:13px/1.5 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--fg); height:100vh; display:flex; flex-direction:column; }
+  header { background:var(--panel); border-bottom:1px solid var(--line); padding:6px 10px; display:flex; gap:8px; align-items:center; }
+  header b { font-weight:600; }
+  header .spacer { flex:1; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:3px; padding:4px 10px; cursor:pointer; font-size:12px; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
+  button:hover { filter:brightness(1.1); }
+  main { flex:1; display:flex; min-height:0; }
+  #tree { width:38%; min-width:240px; overflow:auto; border-right:1px solid var(--line); padding:4px 0; }
+  #right { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #crumbs { padding:6px 10px; border-bottom:1px solid var(--line); background:var(--panel); font-family:monospace; word-break:break-all; }
+  #values { flex:1; overflow:auto; }
+  .node { padding:2px 6px; cursor:pointer; white-space:nowrap; user-select:none; }
+  .node:hover { background:#2a2d2e; }
+  .node.sel { background:var(--sel); }
+  .twisty { display:inline-block; width:14px; color:#888; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:4px 10px; border-bottom:1px solid var(--line); font-family:monospace; vertical-align:top; }
+  th { position:sticky; top:0; background:var(--panel); }
+  td.name { color:#9cdcfe; }
+  td.type { color:#c586c0; }
+  td.data { color:#ce9178; word-break:break-all; }
+  .row-actions button { padding:1px 6px; font-size:11px; margin-left:4px; }
+  #status { padding:4px 10px; border-top:1px solid var(--line); background:var(--panel); font-size:12px; min-height:24px; }
+  .panel { padding:8px 10px; border-bottom:1px solid var(--line); }
+  .panel h3 { margin:0 0 4px; font-size:12px; color:#aaa; text-transform:uppercase; letter-spacing:.04em; }
+  pre { margin:0; white-space:pre-wrap; word-break:break-all; color:#b5cea8; }
+  select, input { background:#3c3c3c; color:var(--fg); border:1px solid var(--line); border-radius:3px; padding:3px 6px; font-size:12px; }
+  dialog { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:14px; min-width:340px; }
+  dialog label { display:block; margin:6px 0 2px; font-size:12px; color:#aaa; }
+  dialog input, dialog select { width:100%; }
+  dialog .actions { margin-top:12px; display:flex; gap:8px; justify-content:flex-end; }
+</style>
+</head>
+<body>
+<header>
+  <b>libreg regedit</b>
+  <span class="spacer"></span>
+  <button class="ghost" onclick="validateHive()">Validate</button>
+  <button class="ghost" onclick="showStructure()">Structure</button>
+  <button class="ghost" onclick="showSecurity()">Security</button>
+  <button class="ghost" onclick="diffRoots()">Diff</button>
+  <button class="ghost" onclick="exportSubtree()">Export .reg</button>
+  <button onclick="newKey()">New Key</button>
+  <button onclick="newValue()">New Value</button>
+</header>
+<main>
+  <div id="tree"></div>
+  <div id="right">
+    <div id="crumbs">(no key selected)</div>
+    <div id="values"></div>
+  </div>
+</main>
+<div id="status">Ready.</div>
+
+<dialog id="dlg">
+  <form method="dialog" id="dlgForm">
+    <div id="dlgBody"></div>
+    <div class="actions">
+      <button value="cancel" class="ghost">Cancel</button>
+      <button value="ok" id="dlgOk">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const state = { root:null, path:"", roots:[] };
+
+function setStatus(msg, err) {
+  const s = document.getElementById("status");
+  s.textContent = msg;
+  s.style.color = err ? "#f48771" : "var(--fg)";
+}
+
+async function api(path, params) {
+  const url = new URL(path, location.origin);
+  if (params) for (const k in params) url.searchParams.set(k, params[k]);
+  const r = await fetch(url);
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+async function post(path, form) {
+  const body = new URLSearchParams(form).toString();
+  const r = await fetch(path, { method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+
+async function init() {
+  try {
+    const j = await api("/api/roots");
+    state.roots = j.roots;
+    const tree = document.getElementById("tree");
+    tree.innerHTML = "";
+    if (!state.roots.length) { setStatus("No roots mounted. Add a mount or start with --hive.", true); return; }
+    for (const label of state.roots) tree.appendChild(makeNode(label, label, ""));
+    setStatus(state.roots.length + " root(s) loaded.");
+  } catch (e) { setStatus(e.message, true); }
+}
+
+// A tree node for (root, in-hive path). Clicking expands children lazily.
+function makeNode(label, root, path) {
+  const div = document.createElement("div");
+  div.className = "node";
+  div.style.paddingLeft = (6 + depth(path) * 14) + "px";
+  const tw = document.createElement("span"); tw.className = "twisty"; tw.textContent = "+";
+  const name = document.createElement("span"); name.textContent = label;
+  div.appendChild(tw); div.appendChild(name);
+  let open = false, childBox = null;
+  div.onclick = async (e) => {
+    e.stopPropagation();
+    selectNode(div, root, path);
+    if (open) { open = false; tw.textContent = "+"; if (childBox) childBox.remove(); childBox = null; return; }
+    try {
+      const j = await api("/api/key", { root, path });
+      open = true; tw.textContent = "-";
+      childBox = document.createElement("div");
+      for (const sk of j.subkeys) {
+        const childPath = path ? (path + "\\" + sk) : sk;
+        childBox.appendChild(makeNode(sk, root, childPath));
+      }
+      div.after(childBox);
+    } catch (err) { setStatus(err.message, true); }
+  };
+  return div;
+}
+function depth(path) { return path ? path.split("\\").length : 0; }
+
+function selectNode(div, root, path) {
+  document.querySelectorAll(".node.sel").forEach(n => n.classList.remove("sel"));
+  div.classList.add("sel");
+  state.root = root; state.path = path;
+  document.getElementById("crumbs").textContent = path ? (root + "\\" + path) : root;
+  loadValues();
+}
+
+async function loadValues() {
+  try {
+    const j = await api("/api/key", { root: state.root, path: state.path });
+    const box = document.getElementById("values");
+    let html = "<table><thead><tr><th>Name</th><th>Type</th><th>Data</th><th></th></tr></thead><tbody>";
+    if (!j.values.length) html += "<tr><td colspan=4 style='color:#888'>(no values)</td></tr>";
+    for (const v of j.values) {
+      const disp = v.name === "" ? "(Default)" : v.name;
+      html += `<tr><td class="name">${esc(disp)}</td><td class="type">${v.type}</td><td class="data">${esc(v.display)}</td>`+
+        `<td class="row-actions"><button class="ghost" onclick='editValue(${js(v)})'>Edit</button>`+
+        `<button class="ghost" onclick='delValue(${js(v.name)})'>Del</button></td></tr>`;
+    }
+    html += "</tbody></table>";
+    box.innerHTML = html;
+  } catch (e) { setStatus(e.message, true); }
+}
+
+function esc(s){ return (s||"").replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+function js(o){ return JSON.stringify(o).replace(/'/g,"&#39;"); }
+
+const TYPES = ["REG_SZ","REG_EXPAND_SZ","REG_DWORD","REG_QWORD","REG_BINARY","REG_MULTI_SZ","REG_NONE","REG_DWORD_BIG_ENDIAN","REG_LINK"];
+
+function dialog(title, fields, onOk) {
+  const body = document.getElementById("dlgBody");
+  body.innerHTML = "<h3 style='margin-top:0'>"+esc(title)+"</h3>" + fields.map(f => {
+    if (f.type === "select")
+      return `<label>${f.label}</label><select id="f_${f.id}">`+f.options.map(o=>`<option ${o===f.value?"selected":""}>${o}</option>`).join("")+`</select>`;
+    return `<label>${f.label}</label><input id="f_${f.id}" value="${esc(f.value||"")}">`;
+  }).join("");
+  const dlg = document.getElementById("dlg");
+  dlg.returnValue = "";
+  dlg.showModal();
+  document.getElementById("dlgForm").onsubmit = () => {
+    if (dlg.returnValue === "cancel") return;
+  };
+  document.getElementById("dlgOk").onclick = async () => {
+    const vals = {};
+    for (const f of fields) vals[f.id] = document.getElementById("f_"+f.id).value;
+    try { await onOk(vals); } catch (e) { setStatus(e.message, true); }
+  };
+}
+
+function requireKey() {
+  if (state.root === null) { setStatus("Select a key first.", true); return false; }
+  return true;
+}
+
+function newKey() {
+  if (!requireKey()) return;
+  dialog("New key under " + (state.path || state.root), [{id:"name",label:"Key name",value:""}], async v => {
+    const key = state.path ? (state.path + "\\" + v.name) : v.name;
+    await post("/api/createkey", { root: state.root, key });
+    setStatus("Key created. Re-expand the parent to see it.");
+  });
+}
+
+function newValue() {
+  if (!requireKey()) return;
+  editValueRaw({ name:"", type:"REG_SZ", display:"" });
+}
+function editValue(v) { editValueRaw(v); }
+function editValueRaw(v) {
+  if (!requireKey()) return;
+  dialog("Value on " + (state.path || state.root), [
+    {id:"name",label:"Name (blank = default)",value:v.name},
+    {id:"type",label:"Type",type:"select",options:TYPES,value:v.type},
+    {id:"data",label:"Data (DWORD/QWORD dec or 0x..; BINARY hex; MULTI_SZ use \\0)",value:v.display},
+  ], async f => {
+    await post("/api/setvalue", { root: state.root, key: state.path, name: f.name, type: f.type, data: f.data });
+    setStatus("Value saved."); loadValues();
+  });
+}
+
+async function delValue(name) {
+  if (!confirm("Delete value " + (name||"(Default)") + "?")) return;
+  try { await post("/api/deletevalue", { root: state.root, key: state.path, name }); loadValues(); setStatus("Value deleted."); }
+  catch (e) { setStatus(e.message, true); }
+}
+
+async function validateHive() {
+  if (!requireKey()) return;
+  try {
+    const j = await api("/api/validate", { root: state.root });
+    if (j.valid === "true" || j.valid === true) setStatus("Hive is structurally valid.");
+    else setStatus("Validation problems: " + j.problems.join("; "), true);
+  } catch (e) { setStatus(e.message, true); }
+}
+
+async function showSecurity() {
+  if (!requireKey()) return;
+  try {
+    const j = await api("/api/security", { root: state.root, path: state.path });
+    dialog("Permissions (SDDL) for " + (state.path || state.root), [
+      {id:"sddl",label:"Security descriptor (SDDL, editable)",value:j.sddl},
+      {id:"hex",label:"Raw self-relative descriptor (" + j.descriptor_len + " bytes, read-only)",value:j.descriptor_hex},
+    ], async f => {
+      await post("/api/setsecurity", { root: state.root, key: state.path, sddl: f.sddl });
+      setStatus("Security descriptor updated.");
+    });
+  } catch (e) { setStatus(e.message, true); }
+}
+
+// A read-only modal: fill the dialog body with HTML and just close on OK.
+function infoModal(title, html) {
+  const body = document.getElementById("dlgBody");
+  body.innerHTML = "<h3 style='margin-top:0'>"+esc(title)+"</h3>" + html;
+  document.getElementById("dlgOk").onclick = () => {};
+  document.getElementById("dlg").showModal();
+}
+function row(k, v){ return "<tr><td class='name'>"+esc(k)+"</td><td>"+esc(String(v))+"</td></tr>"; }
+function hex(n){ return "0x"+(Number(n)>>>0).toString(16); }
+
+async function showStructure() {
+  if (!requireKey()) return;
+  try {
+    const j = await api("/api/structure", { root: state.root });
+    const b = j.base, s = j.stats;
+    let html = "<table>"+
+      row("Signature", b.magic_ok ? "regf (valid)" : "INVALID")+
+      row("Version", b.major_version+"."+b.minor_version)+
+      row("Sequences", b.primary_seq+" / "+b.secondary_seq+(b.clean?" (clean)":" (DIRTY)"))+
+      row("Checksum", b.checksum_valid ? "valid" : "INVALID")+
+      row("Root cell", hex(b.root_offset))+
+      row("Bins size", b.hbins_size+" bytes")+
+      row("File size", b.file_size+" bytes")+
+      row("Hbins", s.hbins)+
+      row("Cells", s.allocated+" allocated, "+s.free+" free ("+s.total_cell_bytes+" bytes)")+
+      "</table>";
+    html += "<h3 style='margin:10px 0 4px'>Cell map"+(j.cells_truncated?" (truncated)":"")+"</h3>";
+    html += "<div style='max-height:300px;overflow:auto'><table><thead><tr><th>Offset</th><th>Size</th><th>State</th><th>Type</th></tr></thead><tbody>";
+    for (const c of j.cells)
+      html += "<tr><td class='data'>"+hex(c.offset)+"</td><td>"+c.size+"</td><td>"+(c.allocated?"alloc":"free")+"</td><td class='type'>"+(c.sig||"")+"</td></tr>";
+    html += "</tbody></table></div>";
+    if (j.walk_error) html += "<p style='color:#f48771'>walk stopped: "+esc(j.walk_error)+"</p>";
+    infoModal("On-disk structure: " + state.root, html);
+  } catch (e) { setStatus(e.message, true); }
+}
+
+function diffRoots() {
+  if (!requireKey()) return;
+  dialog("Diff " + (state.path || state.root) + " against...", [
+    {id:"root",label:"Other root",type:"select",options:state.roots,value:state.root},
+    {id:"path",label:"Other key path (blank = that root)",value:state.path},
+  ], async f => {
+    const j = await api("/api/diff", { root_a: state.root, path_a: state.path, root_b: f.root, path_b: f.path });
+    if (j.identical === true || j.identical === "true") { setStatus("The two key trees are identical."); return; }
+    const html = "<p>"+j.differences.length+" difference(s):</p><ul>"+j.differences.map(d=>"<li>"+esc(d)+"</li>").join("")+"</ul>";
+    infoModal("Diff result", html);
+  });
+}
+
+function exportSubtree() {
+  if (!requireKey()) return;
+  const url = new URL("/api/export", location.origin);
+  url.searchParams.set("root", state.root);
+  url.searchParams.set("path", state.path);
+  window.location = url;
+}
+
+init();
+</script>
+</body>
+</html>
