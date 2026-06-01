@@ -2,6 +2,41 @@
 
 Last updated: 2026-06-01
 
+## Client-differential mode, phase 1 (issue #68)
+
+Validates the `reg`/`sc` CLIs the way libreg is validated: run the same command
+with our `reg` against a hive file and with real `reg.exe` against an equivalent
+hive on the VM, then compare the result hives in canonical form.
+
+- `src/client_differ.rs`: the runner. For each case it seeds a fresh empty hive
+  (made via the libreg agent), runs the ops on both sides, and compares.
+  - Linux: our `reg <verb> HKLM\<key> ... --hive L.hiv`.
+  - Windows: `reg load HKLM\HarnessTmp <hive> && <ops> & reg unload` run as
+    SYSTEM via impacket `atexec` (task scheduler over SMB; `reg load`/`unload`
+    need admin, and DCOM ports are filtered so wmiexec is out). Result pulled
+    over the `winreg` share. Admin creds baked in (temporal lab VM).
+  - Both result hives are canonicalized by loading them into the libreg agent
+    (`/hive/load`+`/hive/dump`); compared with the semantic differ using a new
+    `SemanticOptions.ignore_security` (reg/sc do not edit ACLs, and a
+    SYSTEM-run reg.exe yields a different owner than our tool).
+- Flags: `--client-tests-dir DIR --reg-bin PATH --windows-host HOST`. Dispatched
+  before the Windows handshake (no Windows agent needed). Holds the VM flock.
+- Corpus: `tests/client/{reg_add,reg_delete}.yaml`, 8 cases (REG types, nested
+  keys, default value, multi-sz, overwrite, value/recursive-key/all-values
+  delete). **8/8 green vs the live VM.**
+
+Dependency: the `reg` binary lives in `clients/` (the clients agent's subtree,
+not yet on main); the runner takes `--reg-bin` so it is decoupled. Built from
+the proposal branch for this run.
+
+Finding the differential caught (filed for the clients agent): a bare
+`reg add KEY /f` (no `/v`) — reg.exe leaves an empty default value on the new
+leaf key; our `reg` creates no value. Kept out of the green corpus until
+resolved (see the `add_nested_keys` note).
+
+cmd-`%` escaping for REG_EXPAND_SZ values containing `%` (e.g. `%PATH%`) is a
+known follow-up: cmd.exe expands them through atexec; phase-1 values avoid `%`.
+
 ## Wide-key ri promotion test (issue #40)
 
 `tests/wide_key.yaml` creates 1100 subkeys under one key, forcing ri promotion

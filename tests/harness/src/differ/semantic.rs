@@ -28,11 +28,18 @@ pub struct Diff {
 #[derive(Debug, Clone)]
 pub struct SemanticOptions {
     pub ignore_timestamps: bool,
+    /// Drop the `security` descriptor from comparison. The client differential
+    /// (`reg`/`sc` vs the Windows tools) uses this: those tools do not edit
+    /// ACLs, and a newly created key's owner depends on the creating context
+    /// (a SYSTEM-run reg.exe yields `O:SY...`, our reg yields the default
+    /// `O:BA...`), so key security is out of scope there (see the client
+    /// differential proposal). The agent differential leaves it false.
+    pub ignore_security: bool,
 }
 
 impl Default for SemanticOptions {
     fn default() -> Self {
-        SemanticOptions { ignore_timestamps: true }
+        SemanticOptions { ignore_timestamps: true, ignore_security: false }
     }
 }
 
@@ -74,6 +81,8 @@ fn normalize(v: &Value, opts: &SemanticOptions) -> Value {
             for (k, val) in map {
                 if opts.ignore_timestamps && k == "last_write" {
                     out.insert(k.clone(), Value::String(TS_SENTINEL.to_string()));
+                } else if opts.ignore_security && k == "security" {
+                    out.insert(k.clone(), Value::String("<ignored-security>".to_string()));
                 } else {
                     out.insert(k.clone(), normalize(val, opts));
                 }
@@ -197,7 +206,7 @@ mod tests {
         a["last_write"] = json!("2026-01-01T00:00:00Z");
         b["last_write"] = json!("2026-05-30T09:00:00Z");
         assert!(diff(&a, &b, &SemanticOptions::default()).is_empty());
-        let strict = SemanticOptions { ignore_timestamps: false };
+        let strict = SemanticOptions { ignore_timestamps: false, ..Default::default() };
         assert_eq!(diff(&a, &b, &strict).len(), 1);
     }
 
