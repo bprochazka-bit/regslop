@@ -15,6 +15,7 @@ use crate::backend::Backend;
 use crate::canonical;
 use crate::error::{AgentError, Code, Result};
 use crate::model::{self, Key, KeyInfo, Listing, Validation, Value};
+use crate::valuec;
 use libreg::logical::{Hive, LogicalError};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -59,6 +60,10 @@ impl LibregBackend {
 fn map_err(e: LogicalError) -> AgentError {
     match e {
         LogicalError::NotFound => AgentError::new(Code::KeyNotFound, "key path not found"),
+        LogicalError::HasSubkeys => AgentError::new(
+            Code::KeyHasChildren,
+            "key has subkeys, pass recursive=true to delete",
+        ),
         LogicalError::Unsupported(what) => {
             AgentError::new(Code::Internal, format!("libreg does not support this yet: {what}"))
         }
@@ -82,17 +87,44 @@ fn require_key(hive: &Hive, path: &str) -> Result<()> {
 }
 
 /// Build a `model::Key` tree by walking the libreg hive, so the existing
-/// canonical serializer can render it. Values are omitted in this slice (no
-/// value codec yet); every key carries the default descriptor.
+/// canonical serializer can render it. Values are decoded via `valuec`; every
+/// key carries the default descriptor (libreg assigns it; non-default security
+/// is a later slice). The canonical serializer sorts subkeys and values, so the
+/// order produced here does not matter.
 fn build_key(hive: &Hive, name: &str, path: &str) -> Result<Key> {
     let mut key = Key::new(name); // default sddl + fixed last_write
-    let mut subs = hive.subkeys(path).map_err(map_err)?;
-    subs.sort_by(|a, b| a.to_uppercase().cmp(&b.to_uppercase()));
-    for sub in subs {
+    for vname in hive.values(path).map_err(map_err)? {
+        if let Some((ty, bytes)) = hive.get_value(path, &vname).map_err(map_err)? {
+            key.values.push(Value {
+                name: vname,
+                vtype: valuec::type_name(ty).to_string(),
+                data: valuec::decode(ty, &bytes),
+            });
+        }
+    }
+    for sub in hive.subkeys(path).map_err(map_err)? {
         let child_path = if path.is_empty() { sub.clone() } else { format!("{path}\\{sub}") };
         key.subkeys.push(build_key(hive, &sub, &child_path)?);
     }
     Ok(key)
+}
+
+/// Copy the subtree rooted at `src` to `dst` (both full paths): create `dst`,
+/// copy its values, then recurse into each subkey. Created keys take libreg's
+/// default descriptor (this backend does not carry custom security yet, so the
+/// source keys have the default too). Used to emulate rename, which libreg has
+/// no native operation for, exactly as the Windows agent emulates it.
+fn copy_subtree(hive: &mut Hive, src: &str, dst: &str) -> Result<()> {
+    hive.create_key(dst).map_err(map_err)?;
+    for vname in hive.values(src).map_err(map_err)? {
+        if let Some((ty, bytes)) = hive.get_value(src, &vname).map_err(map_err)? {
+            hive.set_value(dst, &vname, ty, &bytes).map_err(map_err)?;
+        }
+    }
+    for sub in hive.subkeys(src).map_err(map_err)? {
+        copy_subtree(hive, &format!("{src}\\{sub}"), &format!("{dst}\\{sub}"))?;
+    }
+    Ok(())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -160,12 +192,45 @@ impl Backend for LibregBackend {
         })
     }
 
-    fn key_delete(&self, _handle: &str, _path: &str, _recursive: bool) -> Result<()> {
-        Err(unsupported("key_delete"))
+    fn key_delete(&self, handle: &str, path: &str, recursive: bool) -> Result<()> {
+        self.with(handle, |e| {
+            if path.is_empty() {
+                return Err(AgentError::new(Code::AccessDenied, "cannot delete the hive root"));
+            }
+            require_key(&e.hive, path)?;
+            e.hive.delete_key(path, recursive).map_err(map_err)
+        })
     }
 
-    fn key_rename(&self, _handle: &str, _path: &str, _new_name: &str) -> Result<()> {
-        Err(unsupported("key_rename"))
+    fn key_rename(&self, handle: &str, path: &str, new_name: &str) -> Result<()> {
+        if new_name.is_empty() || new_name.contains('\\') {
+            return Err(AgentError::bad_request("new_name must be a single non-empty component"));
+        }
+        self.with(handle, |e| {
+            let comps = crate::model::Key::split_path(path)?;
+            if comps.is_empty() {
+                return Err(AgentError::new(Code::AccessDenied, "cannot rename the hive root"));
+            }
+            require_key(&e.hive, path)?;
+            let (parent, leaf) = comps.split_at(comps.len() - 1);
+            let new_path = if parent.is_empty() {
+                new_name.to_string()
+            } else {
+                format!("{}\\{}", parent.join("\\"), new_name)
+            };
+            if new_name.eq_ignore_ascii_case(leaf[0]) {
+                // libreg is case-insensitive and exposes no in-place name
+                // update, so a case-only rename cannot be emulated by copy.
+                return Err(unsupported("case-only key_rename"));
+            }
+            if e.hive.resolve(&new_path).map_err(map_err)?.is_some() {
+                return Err(AgentError::key_exists(&new_path));
+            }
+            // libreg has no native rename: create the destination, deep-copy the
+            // subtree, then delete the source (CONTRACTS 0.1.2 rename semantics).
+            copy_subtree(&mut e.hive, path, &new_path)?;
+            e.hive.delete_key(path, true).map_err(map_err)
+        })
     }
 
     fn key_list(&self, handle: &str, path: &str) -> Result<Listing> {
@@ -191,18 +256,37 @@ impl Backend for LibregBackend {
         })
     }
 
-    fn value_set(&self, _h: &str, _k: &str, _n: &str, _t: &str, _d: &serde_json::Value) -> Result<()> {
-        // libreg has set_value, but it takes a REG_* type code and raw bytes;
-        // the JSON<->bytes value codec is the next slice.
-        Err(unsupported("value_set"))
+    fn value_set(&self, handle: &str, key: &str, name: &str, vtype: &str, data: &serde_json::Value) -> Result<()> {
+        let (type_code, bytes) = valuec::encode(vtype, data)?;
+        self.with(handle, |e| {
+            require_key(&e.hive, key)?;
+            e.hive.set_value(key, name, type_code, &bytes).map_err(map_err)
+        })
     }
 
-    fn value_delete(&self, _handle: &str, _key: &str, _name: &str) -> Result<()> {
-        Err(unsupported("value_delete"))
+    fn value_delete(&self, handle: &str, key: &str, name: &str) -> Result<()> {
+        self.with(handle, |e| {
+            require_key(&e.hive, key)?;
+            if e.hive.delete_value(key, name).map_err(map_err)? {
+                Ok(())
+            } else {
+                Err(AgentError::value_not_found(name))
+            }
+        })
     }
 
-    fn value_get(&self, _handle: &str, _key: &str, _name: &str) -> Result<Value> {
-        Err(unsupported("value_get"))
+    fn value_get(&self, handle: &str, key: &str, name: &str) -> Result<Value> {
+        self.with(handle, |e| {
+            require_key(&e.hive, key)?;
+            match e.hive.get_value(key, name).map_err(map_err)? {
+                Some((ty, bytes)) => Ok(Value {
+                    name: name.to_string(),
+                    vtype: valuec::type_name(ty).to_string(),
+                    data: valuec::decode(ty, &bytes),
+                }),
+                None => Err(AgentError::value_not_found(name)),
+            }
+        })
     }
 
     fn security_get(&self, handle: &str, path: &str) -> Result<String> {
