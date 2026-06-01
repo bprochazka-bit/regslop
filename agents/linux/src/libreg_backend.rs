@@ -78,8 +78,18 @@ fn unsupported(op: &str) -> AgentError {
     )
 }
 
-/// Ensure `path` resolves to an existing key, else KEY_NOT_FOUND.
+/// Validate a path at the agent edge: a leading separator or an empty component
+/// is a malformed request (BAD_REQUEST). libreg's path splitter is lenient (it
+/// filters empty components), so the agent must enforce this itself to match the
+/// contract and the Windows agent.
+fn check_path(path: &str) -> Result<()> {
+    crate::model::Key::split_path(path).map(|_| ())
+}
+
+/// Ensure `path` is well formed and resolves to an existing key, else
+/// KEY_NOT_FOUND.
 fn require_key(hive: &Hive, path: &str) -> Result<()> {
+    check_path(path)?;
     match hive.resolve(path).map_err(map_err)? {
         Some(_) => Ok(()),
         None => Err(AgentError::key_not_found(path)),
@@ -183,6 +193,7 @@ impl Backend for LibregBackend {
     }
 
     fn key_create(&self, handle: &str, path: &str) -> Result<()> {
+        check_path(path)?;
         self.with(handle, |e| {
             // libreg's create_key is idempotent; the contract wants KEY_EXISTS
             // when the leaf already exists, so enforce that at the agent edge.

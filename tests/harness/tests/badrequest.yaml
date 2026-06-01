@@ -1,0 +1,28 @@
+# Malformed requests must surface as BAD_REQUEST (CONTRACTS 0.1.4), not as an
+# agent-bug INTERNAL or a data-shape TYPE_MISMATCH. Exercises two of the
+# contract's examples: a path that starts with a separator, and an unknown
+# value-type constant. Both agents must agree on the code.
+name: malformed_requests_rejected
+tags: [semantic]
+operations:
+  - op: hive_create
+    path: /tmp/libreg_badreq.hiv
+    capture: h
+  - op: key_create
+    handle: $h
+    path: \LeadingSeparator
+    expect_error: BAD_REQUEST
+  - op: key_create
+    handle: $h
+    path: Valid
+  - op: value_set
+    handle: $h
+    key: Valid
+    name: X
+    type: REG_BOGUS
+    data: 1
+    expect_error: BAD_REQUEST
+  - op: hive_save
+    handle: $h
+expect:
+  semantic_equal: true
