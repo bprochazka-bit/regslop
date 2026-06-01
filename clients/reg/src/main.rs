@@ -258,19 +258,22 @@ fn cmd_add(args: &[String]) -> CliResult<()> {
         .ok_or_else(|| CliError::usage("reg add needs a key name"))?;
     let (file, in_hive, _) = resolve(key, &flags)?;
     let mut session = Session::open_or_create(&file)?;
-
-    // Determine whether a value is being set.
-    let setting_value = flags.has("v") || flags.has("ve");
     let force = flags.has("f");
 
+    let existed = session.exists(&in_hive)?;
     session.hive_mut().create_key(&in_hive)?;
 
-    if setting_value {
-        let name = if flags.has("ve") {
-            String::new()
-        } else {
-            flags.get("v").unwrap_or("").to_string()
-        };
+    // reg.exe operates on a value whenever one is named (/v), the default is
+    // named (/ve), or value details are given (/t, /d). A bare add of a *new*
+    // key also sets the default value to an empty REG_SZ: reg.exe leaves an
+    // empty (Default) on a freshly created key, so we match it (the harness
+    // client-differential flagged us for creating the key with no value). An
+    // existing key is left as-is by a bare add, so "ensure a key exists" does
+    // not clobber its default.
+    let explicit_value = flags.has("v") || flags.has("ve") || flags.has("t") || flags.has("d");
+    if explicit_value || !existed {
+        // /v gives the value name; /ve and a bare add both target the default.
+        let name = flags.get("v").unwrap_or("").to_string();
         let ty = match flags.get("t") {
             Some(t) => value::type_from_name(t)
                 .ok_or_else(|| CliError::usage(format!("unknown type {t}")))?,

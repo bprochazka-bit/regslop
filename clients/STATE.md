@@ -47,6 +47,12 @@ Everything below builds clean (`cargo build`), is clippy-clean
   (`/k` keys, `/d` data, default keys+value-names+data), `/c` case-sensitive,
   `/e` exact, and a `/t Type` filter. Search prints an "End of search: N
   match(es)" line and exits 1 when nothing matches.
+- add: a bare `reg add KEY` (no `/v`) on a *new* key leaves an empty default
+  value (REG_SZ ""), matching reg.exe (RegCreateKeyEx then a default set). A
+  bare add of an existing key does not clobber its default; `/v` sets only the
+  named value; nested adds put the default only on the leaf. This resolves the
+  harness client-differential finding filed against the clients (see main's
+  `tests/harness/STATE.md`, the `add_nested_keys` note).
 - compare supports `/s` and the output modes `/oa` `/od` (default) `/os` `/on`,
   prints "Result Compared: Identical/Different", and exits 0 when identical, 2
   when different (matching reg.exe).
