@@ -26,6 +26,33 @@ Depends on the agent PR (`/test/crash_save` + log-backed save/load); built and
 verified together. Once both land, the spec agent can add `/test/crash_save` to
 CONTRACTS (MINOR, Linux-only) per ADR 0004.
 
+## Client-differential phase 4: reg fuzz (issue #68)
+
+A seeded operation fuzzer feeds generated `reg` sequences through the same
+client differential. `--client-fuzz N` runs N sequences of `--client-fuzz-ops K`
+(default 20) operations each; every sequence is fully determined by its seed
+(`--client-fuzz-seed` base `+ i`), so failures are reproducible. Each sequence
+batches all K ops into one load/operate/unload VM round-trip (the cost is one
+round-trip per sequence, not per op). Results report under the `fuzz` tag; a
+failing sequence is written to `<results>/client-fuzz/<name>.yaml`, a replayable
+`--client-tests-dir` case.
+
+- `client_differ.rs`: `run_fuzz` + a SplitMix64 `Rng` (no external crates) +
+  `gen_sequence` / `gen_data`. The generator is **stateful**: it tracks existing
+  keys/values so a generated delete always hits something, making every op
+  succeed on both sides and every hive difference a genuine divergence. It covers
+  all six REG types, value overwrites, value deletes, and recursive key deletes.
+- `main.rs`: `--client-fuzz[-seed|-ops]` flags; `run_client_differential` now
+  runs the authored corpus (`semantic` tag) and/or the fuzzer (`fuzz` tag) and is
+  green only if both fully pass. `report_client(tag, results)` prints each.
+
+Result: **20/20 green over 500 ops** vs the VM. Two generator lessons baked in:
+REG_EXPAND_SZ data uses an undefined `%FZnn%` var (a real `%WINDIR%` would be
+expanded by the cmd.exe transport before reg.exe sees it, a harness artifact);
+and bare `add KEY /f` is not generated because its on-existing-key case is a real
+divergence filed as #84 (sibling of #71). Re-add a bare-add-on-existing case once
+#84 is fixed. Phase 4 completes the #68 phasing (reg, sc, import/export, fuzz).
+
 ## Client fixes #71 and #78 validated, corpus workarounds dropped
 
 Both clients-agent fixes the differential surfaced have merged to main and are now
