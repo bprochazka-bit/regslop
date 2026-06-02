@@ -71,6 +71,12 @@ Everything below builds clean (`cargo build`), is clippy-clean
   normal/severe/..) to the right REG_DWORD values; binPath -> ImagePath
   (REG_EXPAND_SZ), depend -> DependOnService (REG_MULTI_SZ, `/`-separated),
   DisplayName/obj/group -> REG_SZ.
+- `sc create` defaults `ObjectName` to `LocalSystem` (REG_SZ) for win32
+  service types (own/share, and types carrying those bits) when `obj=` is not
+  given, matching sc.exe; driver types (kernel/filesys) get no ObjectName, and
+  an explicit `obj=` is always honored. Resolves the harness
+  client-differential finding (issue #78). `sc config` is unchanged (it writes
+  only the fields you pass).
 - Runtime verbs (start/stop/pause/continue/control) fail with a clear
   "not available on offline hives" message (no live SCM).
 - Verified: create/qc/config/query/delete, and `reg query` reads the exact

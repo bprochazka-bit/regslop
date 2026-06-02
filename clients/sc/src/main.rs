@@ -197,10 +197,19 @@ fn cmd_create(p: &Parsed) -> CliResult<()> {
     }
     session.hive_mut().create_key(&key)?;
     // Defaults matching sc.exe: type own, start demand, error normal.
-    set_dword(&mut session, &key, "Type", parse_type(p.opt("type").unwrap_or("own"))?)?;
+    let svc_type = parse_type(p.opt("type").unwrap_or("own"))?;
+    set_dword(&mut session, &key, "Type", svc_type)?;
     set_dword(&mut session, &key, "Start", parse_start(p.opt("start").unwrap_or("demand"))?)?;
     set_dword(&mut session, &key, "ErrorControl", parse_error(p.opt("error").unwrap_or("normal"))?)?;
     apply_common_options(&mut session, &key, p)?;
+    // sc.exe defaults the service account to LocalSystem for win32 services
+    // (own/share) when obj= is not given; driver services (kernel/filesys) get
+    // no ObjectName. We match it so a bare `sc create ... type= own` is
+    // semantic identical to sc.exe (harness client-differential, issue #78).
+    const SERVICE_WIN32: u32 = 0x10 | 0x20;
+    if p.opt("obj").is_none() && svc_type & SERVICE_WIN32 != 0 {
+        set_value(&mut session, &key, "ObjectName", value::REG_SZ, &value::build_sz("LocalSystem"))?;
+    }
     session.save()?;
     println!("[SC] CreateService SUCCESS");
     Ok(())
