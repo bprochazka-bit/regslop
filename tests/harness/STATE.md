@@ -46,12 +46,16 @@ failing sequence is written to `<results>/client-fuzz/<name>.yaml`, a replayable
   runs the authored corpus (`semantic` tag) and/or the fuzzer (`fuzz` tag) and is
   green only if both fully pass. `report_client(tag, results)` prints each.
 
-Result: **20/20 green over 500 ops** vs the VM. Two generator lessons baked in:
-REG_EXPAND_SZ data uses an undefined `%FZnn%` var (a real `%WINDIR%` would be
-expanded by the cmd.exe transport before reg.exe sees it, a harness artifact);
-and bare `add KEY /f` is not generated because its on-existing-key case is a real
-divergence filed as #84 (sibling of #71). Re-add a bare-add-on-existing case once
-#84 is fixed. Phase 4 completes the #68 phasing (reg, sc, import/export, fuzz).
+Result: **green over hundreds of ops** vs the VM. One generator lesson stays
+baked in: REG_EXPAND_SZ data uses an undefined `%FZnn%` var (a real `%WINDIR%`
+would be expanded by the cmd.exe transport before reg.exe sees it, a harness
+artifact). Phase 4 completes the #68 phasing (reg, sc, import/export, fuzz).
+
+Bare `add KEY /f` is now generated freely: clients #84 (sibling of #71) fixed the
+on-existing-key default-value divergence the fuzzer first found, so reg.exe and
+our reg match on bare adds whether the key is new or already exists. The authored
+corpus also gained `bare_add_on_existing_key`. (The fuzzer originally steered
+around bare adds while #84 was open.)
 
 ## Client fixes #71 and #78 validated, corpus workarounds dropped
 

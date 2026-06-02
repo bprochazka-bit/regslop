@@ -633,26 +633,32 @@ fn gen_sequence(seed: u64, n: u32) -> Vec<String> {
         k
     };
 
-    // Bare `add KEY /f` is intentionally not generated: the newly-created case is
-    // covered by the authored corpus (bare_key_default_value), and the
-    // already-exists case is a known divergence (reg.exe stamps an empty default
-    // value on an existing key, our reg does not), filed for the clients agent.
     for _ in 0..n {
         match r.below(100) {
             // delete a value that exists
-            d if d < 25 && !vals.is_empty() => {
+            d if d < 20 && !vals.is_empty() => {
                 let idx = r.below(vals.len() as u64) as usize;
                 let (k, name) = vals.remove(idx);
                 ops.push(format!("delete {k} /v {name} /f"));
             }
             // delete a key that exists (recursively, like reg.exe)
-            d if d < 45 && !keys.is_empty() => {
+            d if d < 35 && !keys.is_empty() => {
                 let idx = r.below(keys.len() as u64) as usize;
                 let k = keys.remove(idx);
                 let prefix = format!("{k}\\");
                 keys.retain(|e| !e.starts_with(&prefix));
                 vals.retain(|(vk, _)| vk != &k && !vk.starts_with(&prefix));
                 ops.push(format!("delete {k} /f"));
+            }
+            // bare key add (no value): reg.exe stamps an empty default value on
+            // the leaf whether the key is new (clients #71) or already exists
+            // (clients #84), and our reg matches both, so we generate it freely.
+            d if d < 50 => {
+                let k = rand_key(&mut r);
+                if !keys.contains(&k) {
+                    keys.push(k.clone());
+                }
+                ops.push(format!("add {k} /f"));
             }
             // add (or overwrite) a value
             _ => {

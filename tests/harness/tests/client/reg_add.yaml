@@ -31,3 +31,10 @@ ops:
 name: bare_key_default_value
 ops:
   - add Software\Bare\Leaf /f
+---
+# A bare `reg add KEY /f` on a key that ALREADY exists: reg.exe stamps the empty
+# default value here too; our reg matches as of clients #84 (sibling of #71).
+name: bare_add_on_existing_key
+ops:
+  - add Software\Exist /v v0 /t REG_SZ /d hello /f
+  - add Software\Exist /f
