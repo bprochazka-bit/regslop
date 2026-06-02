@@ -40,10 +40,17 @@ struct ClientTest {
     /// service, and to extract its subtree from our offline hive).
     #[serde(default)]
     service: Option<String>,
+    /// For reg_import tests: the `.reg` file body. `{ROOT}` is substituted with
+    /// `HKEY_LOCAL_MACHINE` for our tool and `HKEY_LOCAL_MACHINE\HarnessTmp` for
+    /// the loaded Windows hive.
+    #[serde(default)]
+    reg: Option<String>,
     /// Shared command tails. For reg: `add Software\Foo /v ...` (the key is
     /// relative to the hive root; the runner prefixes `HKLM\` for our tool and
     /// `HKLM\HarnessTmp\` for the loaded Windows hive). For sc the same string
-    /// runs both tools verbatim (`create Name binPath= ...`).
+    /// runs both tools verbatim (`create Name binPath= ...`). Absent for
+    /// reg_import tests (which use `reg`).
+    #[serde(default)]
     ops: Vec<String>,
 }
 
@@ -77,6 +84,10 @@ pub fn run(
             "sc" => match sc_bin {
                 Some(bin) => run_sc_case(agent, vm_host, bin, &test),
                 None => fail("sc test but no --sc-bin given".to_string()),
+            },
+            "reg_import" => match reg_bin {
+                Some(bin) => run_reg_import_case(agent, vm_host, bin, &test),
+                None => fail("reg_import test but no --reg-bin given".to_string()),
             },
             _ => match reg_bin {
                 Some(bin) => run_case(agent, vm_host, bin, &test),
@@ -274,6 +285,80 @@ fn service_view(node: &Value) -> Value {
         obj.insert("name".to_string(), Value::String(String::new()));
     }
     v
+}
+
+/// A `.reg import` case. Both tools import the same `.reg` body (with the root
+/// substituted per side) into an equal hive, then the result hives are
+/// compared. `reg.exe import` works on a loaded key, so the Windows side uses
+/// the same load/import/unload wrapper as `reg add`.
+fn run_reg_import_case(agent: &Client, vm_host: &str, reg_bin: &Path, test: &ClientTest) -> CaseResult {
+    let fail = |detail: String| CaseResult { name: test.name.clone(), passed: false, detail };
+    let Some(content) = &test.reg else {
+        return fail("reg_import test needs a `reg` field".to_string());
+    };
+    let safe = sanitize(&test.name);
+    let l_hive = format!("/tmp/client_{safe}_lin.hiv");
+    let w_local = format!("/tmp/client_{safe}_win.hiv");
+    let l_reg = format!("/tmp/client_{safe}_lin.reg");
+    let w_reg = format!("/tmp/client_{safe}_win.reg");
+    let remote_hive = format!("imp_{safe}.hiv");
+    let remote_reg = format!("imp_{safe}.reg");
+    // .reg files are CRLF; the root differs per side.
+    let render = |root: &str| content.replace("{ROOT}", root).replace('\n', "\r\n");
+
+    // --- Linux side ---
+    if std::fs::write(&l_reg, render("HKEY_LOCAL_MACHINE")).is_err() || std::fs::copy(SEED, &l_hive).is_err() {
+        return fail("writing linux .reg / seed".to_string());
+    }
+    match Command::new(reg_bin).args(["import", &l_reg, "--hive", &l_hive]).output() {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => return fail(format!("our reg import exit {:?}: {}", o.status.code(), String::from_utf8_lossy(&o.stderr).trim())),
+        Err(e) => return fail(format!("running our reg: {e}")),
+    }
+
+    // --- Windows side: load the hive, import the .reg, unload ---
+    if std::fs::write(&w_reg, render("HKEY_LOCAL_MACHINE\\HarnessTmp")).is_err() {
+        return fail("writing windows .reg".to_string());
+    }
+    if let Err(e) = smb_put(vm_host, SEED, &remote_hive) {
+        return fail(format!("smb push hive: {e}"));
+    }
+    if let Err(e) = smb_put(vm_host, &w_reg, &remote_reg) {
+        return fail(format!("smb push .reg: {e}"));
+    }
+    let chain = format!(
+        "reg unload {MOUNT} >nul 2>nul & reg load {MOUNT} {WIN_SHARE_DIR}\\{remote_hive} \
+         && reg import {WIN_SHARE_DIR}\\{remote_reg} & reg unload {MOUNT}"
+    );
+    if let Err(e) = vm_exec(vm_host, &format!("cmd.exe /c \"{chain}\"")) {
+        return fail(format!("vm exec: {e}"));
+    }
+    if let Err(e) = smb_get(vm_host, &remote_hive, &w_local) {
+        return fail(format!("smb pull: {e}"));
+    }
+    let _ = smb_del(vm_host, &remote_hive);
+    let _ = smb_del(vm_host, &remote_reg);
+
+    let a = match canonicalize(agent, &l_hive) {
+        Ok(v) => v,
+        Err(e) => return fail(format!("canonicalize linux hive: {e}")),
+    };
+    let b = match canonicalize(agent, &w_local) {
+        Ok(v) => v,
+        Err(e) => return fail(format!("canonicalize windows hive: {e}")),
+    };
+    for f in [&l_hive, &w_local, &l_reg, &w_reg] {
+        let _ = std::fs::remove_file(f);
+    }
+
+    let opts = SemanticOptions { ignore_timestamps: true, ignore_security: true };
+    let diffs = semantic::compare(&a, &b, &opts).diffs;
+    if diffs.is_empty() {
+        CaseResult { name: test.name.clone(), passed: true, detail: String::new() }
+    } else {
+        let summary: Vec<String> = diffs.iter().take(6).map(|d| format!("{}: {}", d.path, d.detail)).collect();
+        fail(summary.join(" | "))
+    }
 }
 
 // --- helpers ---

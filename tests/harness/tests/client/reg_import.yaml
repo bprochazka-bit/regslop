@@ -1,0 +1,23 @@
+# .reg import differential: both tools import the same .reg (root substituted
+# per side) into an equal hive; the result hives are compared.
+name: import_basic
+kind: reg_import
+reg: |
+  Windows Registry Editor Version 5.00
+
+  [{ROOT}\Software\Imported]
+  "Greeting"="hello"
+  "Count"=dword:0000002a
+  @="rootdefault"
+
+  [{ROOT}\Software\Imported\Sub]
+  "Nested"="yes"
+---
+name: import_binary_qword
+kind: reg_import
+reg: |
+  Windows Registry Editor Version 5.00
+
+  [{ROOT}\Software\Types]
+  "Bin"=hex:01,02,03,04
+  "Big"=hex(b):00,00,00,00,01,00,00,00

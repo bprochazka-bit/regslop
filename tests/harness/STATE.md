@@ -26,6 +26,30 @@ Depends on the agent PR (`/test/crash_save` + log-backed save/load); built and
 verified together. Once both land, the spec agent can add `/test/crash_save` to
 CONTRACTS (MINOR, Linux-only) per ADR 0004.
 
+## Client-differential phase 3a: reg import (issue #68)
+
+`.reg` import differential: both tools import the same `.reg` body into an equal
+seed hive, then the result hives are compared whole. `reg.exe import` works on a
+loaded key, so the Windows side reuses the `reg add` load/import/unload wrapper
+(`reg load HarnessTmp <hive> && reg import <reg> & reg unload`). The `.reg` text
+is rendered per side: `{ROOT}` substitutes to `HKEY_LOCAL_MACHINE` for our tool
+and `HKEY_LOCAL_MACHINE\HarnessTmp` for the loaded hive; line endings are forced
+to CRLF.
+
+- `client_differ.rs` gained a `kind: reg_import` path (`run_reg_import_case`);
+  `ClientTest` gained a `reg` field (the `.reg` body), and `ops` is now
+  `#[serde(default)]` (import cases carry no ops).
+- `tests/client/reg_import.yaml`: 2 cases (basic = SZ/DWORD/default/nested;
+  binary+qword = `hex:` REG_BINARY and `hex(b):` REG_QWORD).
+- Full client differential is **13/13 green** vs the VM against the main-tree
+  clients binaries (8 reg + 2 import + 3 sc). Import needs no clients fix, so it
+  is purely additive on top of phase 2.
+
+Compared with `SemanticOptions { ignore_timestamps, ignore_security }` (reg edits
+no ACLs). Remaining phase-3 sub-piece: export-and-diff (`reg export` both sides,
+compare the `.reg` text). Separately, the sc corpus still carries the
+`obj= LocalSystem` workaround until clients #78 merges (tracked there, not here).
+
 ## Client-differential phase 2: sc (issue #68)
 
 `sc.exe` only talks to the live SCM (it cannot target a loaded hive like
