@@ -22,6 +22,7 @@ use cli_core::value;
 use http::{Request, Response};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
@@ -42,6 +43,10 @@ fn main() {
     let mut bind_addr = "127.0.0.1".to_string();
     let mut hive_override: Option<PathBuf> = None;
     let mut override_label = "HKEY_LOCAL_MACHINE".to_string();
+    // regedit is a desktop-style local tool, not a service: by default it opens
+    // the UI in a browser once the server is listening. --no-browser suppresses
+    // that (and we just print the URL to open by hand).
+    let mut open_browser = true;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -63,8 +68,12 @@ fn main() {
                 i += 1;
                 override_label = args.get(i).cloned().unwrap_or(override_label);
             }
+            "--no-browser" => open_browser = false,
             "-h" | "--help" => {
-                eprintln!("regedit (libreg) --port N --bind ADDR [--hive FILE --root LABEL]");
+                eprintln!(
+                    "regedit (libreg) [--port N] [--bind ADDR] [--no-browser] \
+                     [--hive FILE --root LABEL]"
+                );
                 return;
             }
             other => eprintln!("ignoring unknown argument: {other}"),
@@ -88,12 +97,60 @@ fn main() {
     let state = Arc::new(AppState { roots });
 
     let bind = format!("{bind_addr}:{port}");
-    println!("regedit serving on http://{bind}  ({} root(s))", state.roots.len());
+    // Bind first so we know the port is ours before announcing a URL or opening
+    // a browser at it. A bound socket queues connections, so a browser launched
+    // now is served as soon as the accept loop below starts.
+    let listener = match http::bind(&bind) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("could not bind {bind}: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // The URL to visit. When bound to all interfaces, point the browser at
+    // loopback rather than 0.0.0.0, which browsers will not open.
+    let host = if bind_addr == "0.0.0.0" || bind_addr == "::" {
+        "127.0.0.1"
+    } else {
+        bind_addr.as_str()
+    };
+    let url = format!("http://{host}:{port}");
+    println!("regedit serving on {url}  ({} root(s))", state.roots.len());
+
+    if open_browser {
+        launch_browser(&url);
+    } else {
+        println!("open {url} in your browser");
+    }
+
     let st = state.clone();
-    if let Err(e) = http::serve(&bind, move |req| dispatch(&st, req)) {
+    if let Err(e) = http::serve(listener, move |req| dispatch(&st, req)) {
         eprintln!("server error: {e}");
         std::process::exit(1);
     }
+}
+
+/// Best-effort: open `url` in the user's default browser. If no opener is
+/// available (for example a headless box with no `xdg-open`), fall back to
+/// telling the user which URL to open by hand.
+fn launch_browser(url: &str) {
+    // xdg-open is the freedesktop standard; the others cover minimal installs.
+    let openers: [&[&str]; 5] = [
+        &["xdg-open"],
+        &["gio", "open"],
+        &["sensible-browser"],
+        &["x-www-browser"],
+        &["www-browser"],
+    ];
+    for opener in openers {
+        let (cmd, pre) = opener.split_first().expect("opener is non-empty");
+        if Command::new(cmd).args(pre).arg(url).spawn().is_ok() {
+            println!("opening {url} in your browser (pass --no-browser to skip)");
+            return;
+        }
+    }
+    println!("could not launch a browser automatically; open {url} in your browser");
 }
 
 fn build_roots(hive_override: Option<PathBuf>, label: String) -> CliResult<Vec<RootEntry>> {

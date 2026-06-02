@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sc"
+name = "winsc"
 version = "0.1.0"
 dependencies = [
  "cli-core",

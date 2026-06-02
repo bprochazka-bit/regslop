@@ -60,13 +60,20 @@ impl Response {
     }
 }
 
-/// Run the server, dispatching each request through `handler` until the process
-/// is killed.
-pub fn serve<F>(bind: &str, handler: F) -> std::io::Result<()>
+/// Bind a TCP listener for the server. Kept separate from [`serve`] so the
+/// caller can confirm the bind succeeded (and learn the URL) before launching a
+/// browser at it: the OS queues incoming connections on a bound socket, so a
+/// browser opened right after this returns will not be refused.
+pub fn bind(addr: &str) -> std::io::Result<TcpListener> {
+    TcpListener::bind(addr)
+}
+
+/// Run the server on an already-bound listener, dispatching each request
+/// through `handler` until the process is killed.
+pub fn serve<F>(listener: TcpListener, handler: F) -> std::io::Result<()>
 where
     F: Fn(&Request) -> Response + Send + Sync + 'static,
 {
-    let listener = TcpListener::bind(bind)?;
     let handler = std::sync::Arc::new(handler);
     for stream in listener.incoming() {
         match stream {

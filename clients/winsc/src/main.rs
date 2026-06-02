@@ -1,8 +1,13 @@
-//! `sc`: an sc.exe-compatible service tool for offline hives.
+//! `winsc`: an sc.exe-compatible service tool for offline hives.
+//!
+//! The binary is named `winsc` to avoid the name clash with the `sc`
+//! spreadsheet calculator that Debian and Ubuntu ship. Packaging installs a
+//! `sc` alias only when no other package already owns that name, so on a clean
+//! system `sc create ...` keeps working with sc.exe-identical syntax.
 //!
 //! Windows services live in the registry under
 //! `HKLM\SYSTEM\<ControlSet>\Services\<name>`. With no running Service Control
-//! Manager on Linux, `sc` here is an offline editor of that registry data: it
+//! Manager on Linux, `winsc` here is an offline editor of that registry data: it
 //! supports the static, registry-backed verbs (create, config, delete, qc,
 //! query, description) and refuses the runtime verbs (start, stop, pause,
 //! continue) that need a live SCM.
@@ -76,7 +81,7 @@ fn run(args: &[String]) -> CliResult<()> {
             print_usage();
             Ok(())
         }
-        other => Err(CliError::usage(format!("unknown sc command '{other}'"))),
+        other => Err(CliError::usage(format!("unknown command '{other}'"))),
     }
 }
 
@@ -462,17 +467,18 @@ fn error_label(e: u32) -> &'static str {
 
 fn print_usage() {
     println!(
-        "sc (libreg) - offline service configuration tool\n\
+        "winsc (libreg) - offline service configuration tool\n\
+         (also invokable as `sc` when no other package owns that name)\n\
          \n\
          Usage:\n\
-         \x20 sc create <name> binPath= <path> [type= own|share|kernel|...] \\\n\
+         \x20 winsc create <name> binPath= <path> [type= own|share|kernel|...] \\\n\
          \x20           [start= boot|system|auto|demand|disabled] [error= normal|...] \\\n\
          \x20           [DisplayName= <text>] [depend= a/b/c] [obj= <account>] [group= <g>]\n\
-         \x20 sc config <name> [same options]\n\
-         \x20 sc delete <name>\n\
-         \x20 sc qc <name>\n\
-         \x20 sc query [name]\n\
-         \x20 sc description <name> <text>\n\
+         \x20 winsc config <name> [same options]\n\
+         \x20 winsc delete <name>\n\
+         \x20 winsc qc <name>\n\
+         \x20 winsc query [name]\n\
+         \x20 winsc description <name> <text>\n\
          \n\
          Operates on HKLM\\SYSTEM\\<ControlSet>\\Services in the mounted SYSTEM hive.\n\
          Use --hive <File> to target a file and --controlset N to pick a control set\n\

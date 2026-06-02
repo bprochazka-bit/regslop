@@ -1,17 +1,28 @@
-.TH SC 1 "2026-06-01" "libreg 0.1.0" "User Commands"
+.TH WINSC 1 "2026-06-02" "libreg 0.1.0" "User Commands"
 .SH NAME
-sc \- offline Windows service configuration tool
+winsc \- offline Windows service configuration tool
 .SH SYNOPSIS
-.B sc
+.B winsc
 .I command
 .RI [ service ]
 .RI [ options ]
 .SH DESCRIPTION
-.B sc
+.B winsc
 edits Windows service definitions stored in a registry
 .B SYSTEM
 hive, modeled on the Windows
 .BR sc.exe .
+It is named
+.B winsc
+to avoid the name clash with the
+.BR sc (1)
+spreadsheet calculator that Debian and Ubuntu ship. When no other package
+owns that name, installation adds a
+.B sc
+alias, so
+.B sc create ...
+keeps working with sc.exe-identical syntax.
+.PP
 Services live under
 .IR "HKLM\eSYSTEM\e<ControlSet>\eServices\e<name>" .
 Because there is no running Service Control Manager on Linux, only the static,
@@ -34,25 +45,25 @@ and is selected with
 .IR N .
 .SH COMMANDS
 .TP
-.BI "sc create " "name " "binPath= path [type= ...] [start= ...] [error= ...] [DisplayName= ...] [depend= a/b] [obj= ...] [group= ...]"
+.BI "winsc create " "name " "binPath= path [type= ...] [start= ...] [error= ...] [DisplayName= ...] [depend= a/b] [obj= ...] [group= ...]"
 Create a service key with the given configuration. Note the
 .BR "key= value"
 form: a space follows the equals sign, as in
 .BR sc.exe .
 .TP
-.BI "sc config " "name " "[options]"
+.BI "winsc config " "name " "[options]"
 Change an existing service's configuration.
 .TP
-.BI "sc delete " "name"
+.BI "winsc delete " "name"
 Delete a service.
 .TP
-.BI "sc qc " "name"
+.BI "winsc qc " "name"
 Print a service's configuration.
 .TP
-.BI "sc query " "[name]"
+.BI "winsc query " "[name]"
 List services or print one. The dynamic run state is not available offline.
 .TP
-.BI "sc description " "name text"
+.BI "winsc description " "name text"
 Set a service's description.
 .SH OPTION VALUES
 .TP

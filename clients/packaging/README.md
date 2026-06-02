@@ -13,12 +13,12 @@ clients/packaging/build-deb.sh
 This builds the release binaries and writes two packages to
 `clients/target/deb/`:
 
-- **libreg-tools** `/usr/bin/reg`, `/usr/bin/sc`, their man pages, and an
-  example mount map in `/usr/share/doc/libreg-tools/`.
-- **libreg-regedit** `/usr/bin/regedit`, its man page, a systemd unit
-  (`/lib/systemd/system/regedit.service`), and a conffile
-  (`/etc/libreg/regedit.conf`). Creates `/var/lib/libreg` for hives and the
-  mount map.
+- **libreg-tools** `/usr/bin/reg`, `/usr/bin/winsc`, their man pages, and an
+  example mount map in `/usr/share/doc/libreg-tools/`. On install, a `sc` alias
+  for `winsc` is added only when no other package owns that name.
+- **libreg-regedit** `/usr/bin/regedit` and its man page. regedit is a local
+  desktop-style tool, not a service: run it and it opens the editor in your
+  browser.
 
 ## Install
 
@@ -27,22 +27,27 @@ sudo dpkg -i clients/target/deb/libreg-tools_0.1.0_amd64.deb
 sudo dpkg -i clients/target/deb/libreg-regedit_0.1.0_amd64.deb
 ```
 
-The regedit package installs but does not auto-start the service (it is a
-network service with no authentication). Enable it when ready:
+Then just run the tools:
 
 ```bash
-sudo systemctl enable --now regedit
+reg query HKLM\\SYSTEM\\...      # reg
+winsc qc <service>               # or `sc qc <service>` if the alias was added
+regedit                          # opens the editor in your browser
 ```
 
-Edit `/etc/libreg/regedit.conf` to set the bind address, port, and any extra
-arguments, then `systemctl restart regedit`. The unit binds 127.0.0.1 by
-default; only expose regedit behind an authenticating reverse proxy.
+`regedit` binds 127.0.0.1 and opens your browser once it is listening. Pass
+`--no-browser` on a headless host (it prints the URL to open by hand), and only
+bind a non-loopback address behind an authenticating reverse proxy, since it
+has no authentication of its own.
 
 ## Notes
 
-- Binaries are installed as `reg`, `sc`, and `regedit` to match the Windows
-  command names. There are no same-named binaries in a base Debian install, but
-  check for local conflicts before deploying widely.
+- The service binary is installed as `winsc`, not `sc`, because Debian and
+  Ubuntu ship `sc` (the spreadsheet calculator). The package adds a `/usr/bin/sc`
+  symlink to `winsc` only when no `sc` command already exists, and removes that
+  symlink on uninstall only if it still points at `winsc`. `reg` and `regedit`
+  keep their Windows command names; check for local conflicts before deploying
+  widely.
 - The packages depend only on `libc6`; everything else is statically linked
   into the native binaries.
 - On a build host with `fakeroot`, run the script under `fakeroot` for correct

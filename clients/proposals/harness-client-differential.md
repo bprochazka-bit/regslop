@@ -119,7 +119,11 @@ The harness can rely on these without further coordination:
 
 - `reg <verb> ...` and `sc <verb> ...` accept a `--hive FILE` global option
   that binds the path's root to `FILE` (so the whole subpath is in-hive). `sc`
-  also takes `--controlset N` (default ControlSet001).
+  also takes `--controlset N` (default ControlSet001). The service tool's binary
+  is now `winsc` (it ships under that name to avoid the Debian/Ubuntu `sc`
+  calculator clash; a `sc` alias is added on install when the name is free), so
+  the harness should point `--sc-bin` at `target/release/winsc`. The verb
+  grammar is unchanged and sc.exe-identical.
 - Alternatively set `$LIBREG_HIVES` to a temp mount-map file to avoid touching
   the user's map. The clients never write outside the named hive and the mount
   map.

@@ -1,6 +1,32 @@
 # Clients STATE
 
-Last updated: 2026-06-01 (clients agent)
+Last updated: 2026-06-02 (clients agent)
+
+## Latest session (2026-06-02)
+
+Two operator-facing changes:
+
+1. **`sc` renamed to `winsc`.** The service tool's crate, binary, and man page
+   are now `winsc` (`clients/winsc/`, `/usr/bin/winsc`, `winsc.1`). This avoids
+   the name clash with the `sc` spreadsheet calculator that Debian and Ubuntu
+   ship. The verb grammar is unchanged and sc.exe-identical. `libreg-tools`
+   postinst adds a `/usr/bin/sc` symlink to `winsc` (and a `sc.1.gz` man symlink)
+   only when no `sc` command already exists; postrm removes those symlinks only
+   if they still point at `winsc`. So on a clean box `sc create ...` still works;
+   where the calculator is installed, users invoke `winsc`. The harness should
+   point `--sc-bin` at `target/release/winsc`.
+2. **`regedit` is no longer a systemd service.** It is a local desktop-style
+   tool: it binds, prints its URL, and opens the UI in the default browser
+   (xdg-open / gio / sensible-browser / x-www-browser / www-browser, best
+   effort). `--no-browser` skips the launch and just prints the URL (use on
+   headless hosts). The TCP listener is bound before the browser launches, so
+   the connection is never refused. The systemd unit and `/etc/libreg/regedit.conf`
+   were removed; `libreg-regedit` now ships only the binary and man page (no
+   maintainer scripts, no state dir). It still binds 127.0.0.1 by default.
+
+Both packages build with `packaging/build-deb.sh` and were inspected with
+`dpkg-deb -c`/`-I`. Workspace builds clean, clippy-clean, tests pass. winsc
+create/qc and regedit (both `--no-browser` and default) were smoke tested.
 
 ## What this subtree is
 
@@ -63,7 +89,9 @@ Everything below builds clean (`cargo build`), is clippy-clean
   `reg load` then query through the mount map, value delete, `/f` searches with
   scope/case/exact, `/t` filtering, and compare exit codes.
 
-### sc (offline service config over a SYSTEM hive)
+### winsc (offline service config over a SYSTEM hive)
+(Binary renamed from `sc` to `winsc` in the 2026-06-02 session; verb grammar
+unchanged. See the latest-session note at the top.)
 - Verbs: create, config, delete, qc, query (static fields), description. The
   `key= value` (space-after-equals) syntax is supported, plus the combined
   `key=value` form. `--hive` and `--controlset N` may appear before or after
@@ -85,14 +113,15 @@ Everything below builds clean (`cargo build`), is clippy-clean
 
 ### packaging (Debian-first, rule 5)
 - `packaging/build-deb.sh` builds two `.deb` packages with `dpkg-deb` only (no
-  external tooling): `libreg-tools` (reg, sc, man pages, example mount map) and
-  `libreg-regedit` (regedit, man page, systemd unit, `/etc/libreg/regedit.conf`
-  conffile, `/var/lib/libreg`). Man pages in `packaging/man/`, the unit and
-  config in `packaging/systemd` and `packaging/conf`.
-- Verified: both packages build, install via `dpkg -i`, the installed
-  `/usr/bin/reg` and `/usr/bin/sc` run, the unit and conffile land correctly,
-  and the packages remove cleanly. The regedit package does not auto-start the
-  service (no auth; loopback bind by default; enable with systemctl when ready).
+  external tooling): `libreg-tools` (reg, winsc, man pages, example mount map,
+  plus a postinst/postrm that manage the conditional `sc` alias) and
+  `libreg-regedit` (regedit + man page only). Man pages in `packaging/man/`.
+  (The systemd unit and `packaging/conf/regedit.conf` were removed in the
+  2026-06-02 session; regedit is no longer a service.)
+- Verified: both packages build and were inspected with `dpkg-deb -c`/`-I`.
+  `libreg-tools` ships `/usr/bin/winsc` with the conditional-`sc`-alias scripts;
+  `libreg-regedit` ships only `/usr/bin/regedit` and its man page (no maintainer
+  scripts, no conffile, no state dir). regedit binds 127.0.0.1 by default.
 
 ### regedit (web)
 - Standalone server (std-only HTTP in `http.rs`, std-only JSON in `json.rs`),
@@ -146,8 +175,9 @@ Everything below builds clean (`cargo build`), is clippy-clean
 4. `reg query` search flags (`/f` `/k` `/d` `/c` `/e` `/t`) and `reg compare`
    output modes (`/oa` `/od` `/os` `/on`) with exit codes: DONE this session.
    Remaining reg.exe flags are lower value (`/z`, `/se`, `/reg:32|64`).
-5. `.deb` packaging for reg/sc and a systemd unit + `.deb` for regedit:
-   DONE this session (`packaging/`). Future: CI to build and attach the debs,
-   and a source package (debian/ dir) if upstreaming to a Debian repo.
+5. `.deb` packaging for reg/winsc and a `.deb` for regedit: DONE
+   (`packaging/`). regedit ships as a browser-launching tool, not a service
+   (changed 2026-06-02). Future: CI to build and attach the debs, and a source
+   package (debian/ dir) if upstreaming to a Debian repo.
 6. Per-tool unit/integration tests beyond cli-core (currently covered by
    end-to-end smoke runs).
