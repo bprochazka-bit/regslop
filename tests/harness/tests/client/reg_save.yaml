@@ -1,0 +1,31 @@
+# reg save differential: the seed is populated via our `reg import`, then both
+# tools `reg save` the subtree to a hive file; the saved hives are compared
+# canonically. The saved file's root is the saved key, so this exercises the
+# root key's own values/class, not just its descendants.
+name: save_basic
+kind: reg_save
+save: Software\Exp
+reg: |
+  Windows Registry Editor Version 5.00
+
+  [{ROOT}\Software\Exp]
+  "Str"="hello"
+  "Dw"=dword:0000002a
+  @="rootdefault"
+
+  [{ROOT}\Software\Exp\Sub]
+  "N"="nested"
+
+  [{ROOT}\Software\Exp\Sub\Deep]
+  "Q"=hex(b):00,00,00,00,01,00,00,00
+---
+name: save_types_subtree
+kind: reg_save
+save: Software\Types
+reg: |
+  Windows Registry Editor Version 5.00
+
+  [{ROOT}\Software\Types]
+  "Bin"=hex:01,02,03,04,05,06,07,08,09,0a,0b,0c,0d,0e,0f,10,11
+  "Multi"=hex(7):61,00,00,00,62,00,00,00,00,00
+  "Expand"=hex(2):25,00,46,00,5a,00,25,00,00,00
