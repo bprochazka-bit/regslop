@@ -1,12 +1,12 @@
 [package]
-name = "sc"
+name = "regmount"
 version = "0.1.0"
 edition = "2021"
-description = "sc.exe-compatible offline service configuration tool"
+description = "Generate a libreg mount map by inspecting hive files"
 license = "MIT OR Apache-2.0"
 
 [[bin]]
-name = "sc"
+name = "regmount"
 path = "src/main.rs"
 
 [dependencies]

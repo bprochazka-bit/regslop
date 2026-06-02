@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["cli-core", "reg", "sc", "regedit"]
+members = ["cli-core", "reg", "regsc", "regedit", "regmount"]
 
 # The client utilities are deliberately dependency-free beyond libreg itself.
 # No registry cache is available in the build environment, and the project is

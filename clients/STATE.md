@@ -1,20 +1,92 @@
 # Clients STATE
 
-Last updated: 2026-06-01 (clients agent)
+Last updated: 2026-06-02 (clients agent)
+
+## Latest session (2026-06-02, part 3): regsc rename
+
+Renamed the service tool from `winsc` to **`regsc`** so it sits in the reg* tool
+family alongside `reg`, `regedit`, and `regmount`. (It had briefly shipped as
+`winsc`; the original reason for moving off the bare name `sc` is the clash with
+the `sc` spreadsheet calculator on Debian and Ubuntu, which still holds.) The
+crate, binary, and man page are now `regsc` (`clients/regsc/`, `/usr/bin/regsc`,
+`regsc.1`). The sc.exe verb grammar is unchanged, and the conditional `sc` alias
+(added on install only when no other package owns the name, removed on uninstall
+only if it still points at `regsc`) is unchanged. The notes below that say
+"winsc" predate this and now read "regsc"; the harness should point `--sc-bin`
+at `target/release/regsc`.
+
+## Latest session (2026-06-02, part 2): regmount
+
+Added a new tool, **`regmount`**, to libreg-tools: a mount-map generator. The
+user passes a path (a hive file or a directory of hives, for example a mounted
+`System32\config` or a user profile); it inspects each file, identifies the
+registry root/subpath it belongs at, prints a `hives.conf`-format map to stdout,
+and with `-o FILE` also writes it (refusing to overwrite without `-f`).
+
+- Identification lives in `cli-core/src/identify.rs` (`identify_hive`), so it is
+  reusable and unit tested. Two signals: the standard hive file name (SYSTEM,
+  SOFTWARE, SAM, SECURITY, COMPONENTS, DRIVERS, DEFAULT, NTUSER.DAT,
+  UsrClass.dat, BCD) and the top-level key shape (Select+ControlSet => SYSTEM,
+  Microsoft+Classes => SOFTWARE, SAM+Domains => SAM, Policy => SECURITY,
+  Software+Environment/Control Panel => user hive, Local Settings/`.ext` =>
+  user classes). File name is primary; contents confirm it or classify a
+  nonstandard name. A readable hive we cannot place returns `mount: None` (not an
+  error) so a scan can surface it.
+- `regmount` (`regmount/src/main.rs`): directory scan skips registry log and
+  transaction companions (`*.LOG`/`.LOG1`/`.LOG2`/`.regtrans-ms`/`.blf`), is
+  optionally recursive (`-r`), comments out hives it cannot place and any whose
+  mount point duplicates one already mapped (so the result stays a valid map),
+  prints the map to stdout and a summary plus skips to stderr.
+- cli-core gained 5 identify unit tests (35 total now, all green). Verified end
+  to end: a synthetic `config/` dir produced a correct map, the map drove a real
+  `reg query` (round trip), single-file mode, the overwrite guard, `--force`,
+  and the single-file-not-a-hive error all behave.
+- Packaging: `regmount` and `regmount.1` are added to `libreg-tools`
+  (build-deb.sh, README, man); workspace member added.
+
+## Latest session (2026-06-02, part 1)
+
+Two operator-facing changes:
+
+1. **`sc` renamed to `regsc`.** The service tool's crate, binary, and man page
+   are now `regsc` (`clients/regsc/`, `/usr/bin/regsc`, `regsc.1`). This avoids
+   the name clash with the `sc` spreadsheet calculator that Debian and Ubuntu
+   ship. The verb grammar is unchanged and sc.exe-identical. `libreg-tools`
+   postinst adds a `/usr/bin/sc` symlink to `regsc` (and a `sc.1.gz` man symlink)
+   only when no `sc` command already exists; postrm removes those symlinks only
+   if they still point at `regsc`. So on a clean box `sc create ...` still works;
+   where the calculator is installed, users invoke `regsc`. The harness should
+   point `--sc-bin` at `target/release/regsc`.
+2. **`regedit` is no longer a systemd service.** It is a local desktop-style
+   tool: it binds, prints its URL, and opens the UI in the default browser
+   (xdg-open / gio / sensible-browser / x-www-browser / www-browser, best
+   effort). `--no-browser` skips the launch and just prints the URL (use on
+   headless hosts). The TCP listener is bound before the browser launches, so
+   the connection is never refused. The systemd unit and `/etc/libreg/regedit.conf`
+   were removed; `libreg-regedit` now ships only the binary and man page (no
+   maintainer scripts, no state dir). It still binds 127.0.0.1 by default.
+
+Both packages build with `packaging/build-deb.sh` and were inspected with
+`dpkg-deb -c`/`-I`. Workspace builds clean, clippy-clean, tests pass. regsc
+create/qc and regedit (both `--no-browser` and default) were smoke tested.
 
 ## What this subtree is
 
-The Linux client utilities on top of libreg: `reg`, `sc`, and `regedit`,
-modeled on the Windows tools. A cargo workspace at `clients/` with four crates:
-`cli-core` (shared library), `reg`, `sc`, `regedit`. They link `libreg` by path
-and have no external crate dependencies (the build environment has no registry
-cache, and the project is Debian-first / native-binary), so the small amount of
-JSON and HTTP regedit needs is hand-rolled.
+The Linux client utilities on top of libreg: `reg`, `regsc`, `regedit`, and
+`regmount`. The first three are modeled on the Windows tools; `regmount` is a
+libreg-specific mount-map generator. A cargo workspace at `clients/` with five
+crates: `cli-core` (shared library), `reg`, `regsc`, `regedit`, `regmount`. They
+link `libreg` by path and have no external crate dependencies (the build
+environment has no registry cache, and the project is Debian-first /
+native-binary), so the small amount of JSON and HTTP regedit needs is
+hand-rolled.
 
 ## What works (this session)
 
 Everything below builds clean (`cargo build`), is clippy-clean
-(`cargo clippy --all-targets`), and `cli-core` has 22 green unit tests.
+(`cargo clippy --all-targets`), and `cli-core` has 35 green unit tests
+(including 5 new `identify` tests added with regmount this session). See the
+latest-session notes above for the regsc rename and the regmount addition.
 
 ### cli-core (shared)
 - `path`: parse `HKLM\...` / `HKEY_LOCAL_MACHINE\...` registry paths (long and
@@ -63,7 +135,9 @@ Everything below builds clean (`cargo build`), is clippy-clean
   `reg load` then query through the mount map, value delete, `/f` searches with
   scope/case/exact, `/t` filtering, and compare exit codes.
 
-### sc (offline service config over a SYSTEM hive)
+### regsc (offline service config over a SYSTEM hive)
+(Binary renamed from `sc` to `regsc` in the 2026-06-02 session; verb grammar
+unchanged. See the latest-session note at the top.)
 - Verbs: create, config, delete, qc, query (static fields), description. The
   `key= value` (space-after-equals) syntax is supported, plus the combined
   `key=value` form. `--hive` and `--controlset N` may appear before or after
@@ -85,14 +159,15 @@ Everything below builds clean (`cargo build`), is clippy-clean
 
 ### packaging (Debian-first, rule 5)
 - `packaging/build-deb.sh` builds two `.deb` packages with `dpkg-deb` only (no
-  external tooling): `libreg-tools` (reg, sc, man pages, example mount map) and
-  `libreg-regedit` (regedit, man page, systemd unit, `/etc/libreg/regedit.conf`
-  conffile, `/var/lib/libreg`). Man pages in `packaging/man/`, the unit and
-  config in `packaging/systemd` and `packaging/conf`.
-- Verified: both packages build, install via `dpkg -i`, the installed
-  `/usr/bin/reg` and `/usr/bin/sc` run, the unit and conffile land correctly,
-  and the packages remove cleanly. The regedit package does not auto-start the
-  service (no auth; loopback bind by default; enable with systemctl when ready).
+  external tooling): `libreg-tools` (reg, regsc, man pages, example mount map,
+  plus a postinst/postrm that manage the conditional `sc` alias) and
+  `libreg-regedit` (regedit + man page only). Man pages in `packaging/man/`.
+  (The systemd unit and `packaging/conf/regedit.conf` were removed in the
+  2026-06-02 session; regedit is no longer a service.)
+- Verified: both packages build and were inspected with `dpkg-deb -c`/`-I`.
+  `libreg-tools` ships `/usr/bin/regsc` with the conditional-`sc`-alias scripts;
+  `libreg-regedit` ships only `/usr/bin/regedit` and its man page (no maintainer
+  scripts, no conffile, no state dir). regedit binds 127.0.0.1 by default.
 
 ### regedit (web)
 - Standalone server (std-only HTTP in `http.rs`, std-only JSON in `json.rs`),
@@ -146,8 +221,9 @@ Everything below builds clean (`cargo build`), is clippy-clean
 4. `reg query` search flags (`/f` `/k` `/d` `/c` `/e` `/t`) and `reg compare`
    output modes (`/oa` `/od` `/os` `/on`) with exit codes: DONE this session.
    Remaining reg.exe flags are lower value (`/z`, `/se`, `/reg:32|64`).
-5. `.deb` packaging for reg/sc and a systemd unit + `.deb` for regedit:
-   DONE this session (`packaging/`). Future: CI to build and attach the debs,
-   and a source package (debian/ dir) if upstreaming to a Debian repo.
+5. `.deb` packaging for reg/regsc and a `.deb` for regedit: DONE
+   (`packaging/`). regedit ships as a browser-launching tool, not a service
+   (changed 2026-06-02). Future: CI to build and attach the debs, and a source
+   package (debian/ dir) if upstreaming to a Debian repo.
 6. Per-tool unit/integration tests beyond cli-core (currently covered by
    end-to-end smoke runs).

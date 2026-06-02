@@ -1,4 +1,4 @@
-.TH REGEDIT 1 "2026-06-01" "libreg 0.1.0" "User Commands"
+.TH REGEDIT 1 "2026-06-02" "libreg 0.1.0" "User Commands"
 .SH NAME
 regedit \- web-based offline registry editor
 .SH SYNOPSIS
@@ -7,6 +7,7 @@ regedit \- web-based offline registry editor
 .IR N ]
 .RB [ \-\-bind
 .IR ADDR ]
+.RB [ \-\-no\-browser ]
 .RB [ \-\-hive
 .IR FILE
 .RB [ \-\-root
@@ -31,6 +32,14 @@ can be served under
 .I LABEL
 (default HKEY_LOCAL_MACHINE). Each request opens the hive file, performs its
 operation, and saves on edit, so changes persist immediately.
+.PP
+.B regedit
+is a local desktop-style tool, not a background service. Once the server is
+listening it opens the UI in your default browser (via
+.BR xdg\-open (1)
+or an equivalent). On a headless host, or with
+.BR \-\-no\-browser ,
+it instead prints the URL for you to open by hand.
 .SH OPTIONS
 .TP
 .BI \-\-port " N"
@@ -38,6 +47,9 @@ TCP port to listen on (default 7890).
 .TP
 .BI \-\-bind " ADDR"
 Address to bind (default 127.0.0.1).
+.TP
+.B \-\-no\-browser
+Do not open a browser; print the URL to open instead.
 .TP
 .BI \-\-hive " FILE"
 Serve a single hive file instead of the mount map.
@@ -48,8 +60,9 @@ Root label for the
 file.
 .SH SECURITY
 .B regedit
-performs no authentication and edits hive files directly. Bind it to a loopback
-or trusted interface only. The packaged systemd unit binds 127.0.0.1 by default.
+performs no authentication and edits hive files directly. It binds 127.0.0.1
+by default; only bind a non-loopback address if you have put it behind an
+authenticating reverse proxy.
 .SH SEE ALSO
 .BR reg (1),
-.BR sc (1)
+.BR regsc (1)

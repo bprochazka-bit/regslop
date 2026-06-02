@@ -28,7 +28,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "sc"
+name = "regmount"
+version = "0.1.0"
+dependencies = [
+ "cli-core",
+]
+
+[[package]]
+name = "regsc"
 version = "0.1.0"
 dependencies = [
  "cli-core",

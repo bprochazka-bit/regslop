@@ -4,8 +4,12 @@
 # (no external cargo tooling, in keeping with the project's native-binary,
 # no-registry-cache constraints). Produces two packages under target/deb:
 #
-#   libreg-tools     /usr/bin/reg, /usr/bin/sc, man pages, example mount map
-#   libreg-regedit   /usr/bin/regedit, man page, systemd unit, /etc config
+#   libreg-tools     /usr/bin/reg, /usr/bin/regsc, /usr/bin/regmount, man
+#                    pages, example mount map. regsc gets a `sc` alias only
+#                    when no other package owns that name (Debian and Ubuntu
+#                    ship `sc`, the calculator).
+#   libreg-regedit   /usr/bin/regedit and its man page. regedit is a local
+#                    desktop-style tool that opens a browser, not a service.
 #
 # Run from anywhere; paths are resolved relative to this script.
 set -euo pipefail
@@ -62,16 +66,57 @@ build_pkg() {
 # ---------------------------------------------------------------- libreg-tools
 stage="$out/stage-tools"
 mkdir -p "$stage"
-install_file "$root/target/release/reg" /usr/bin/reg 0755
-install_file "$root/target/release/sc"  /usr/bin/sc  0755
-gz "$here/man/reg.1" /tmp/reg.1.gz && install_file /tmp/reg.1.gz /usr/share/man/man1/reg.1.gz 0644
-gz "$here/man/sc.1"  /tmp/sc.1.gz  && install_file /tmp/sc.1.gz  /usr/share/man/man1/sc.1.gz  0644
+install_file "$root/target/release/reg"      /usr/bin/reg      0755
+install_file "$root/target/release/regsc"    /usr/bin/regsc    0755
+install_file "$root/target/release/regmount" /usr/bin/regmount 0755
+gz "$here/man/reg.1"      /tmp/reg.1.gz      && install_file /tmp/reg.1.gz      /usr/share/man/man1/reg.1.gz      0644
+gz "$here/man/regsc.1"    /tmp/regsc.1.gz    && install_file /tmp/regsc.1.gz    /usr/share/man/man1/regsc.1.gz    0644
+gz "$here/man/regmount.1" /tmp/regmount.1.gz && install_file /tmp/regmount.1.gz /usr/share/man/man1/regmount.1.gz 0644
 install_file "$here/conf/hives.conf.example" /usr/share/doc/libreg-tools/hives.conf.example 0644
+
+# Maintainer scripts: add a `sc` alias for regsc only when nothing else owns
+# that name. Debian and Ubuntu ship `sc` (the spreadsheet calculator), so we
+# never overwrite an existing command, and we only remove an alias we created.
+mkdir -p "$stage/DEBIAN"
+cat > "$stage/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = "configure" ]; then
+  if [ ! -e /usr/bin/sc ] && ! command -v sc >/dev/null 2>&1; then
+    ln -s regsc /usr/bin/sc
+    if [ -e /usr/share/man/man1/regsc.1.gz ] && [ ! -e /usr/share/man/man1/sc.1.gz ]; then
+      ln -s regsc.1.gz /usr/share/man/man1/sc.1.gz
+    fi
+    echo "regsc: installed a 'sc' alias (no conflicting 'sc' command was found)."
+  else
+    echo "regsc: a 'sc' command already exists; invoke this tool as 'regsc'."
+  fi
+fi
+exit 0
+EOF
+cat > "$stage/DEBIAN/postrm" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+  if [ -L /usr/bin/sc ] && [ "$(readlink /usr/bin/sc)" = "regsc" ]; then
+    rm -f /usr/bin/sc
+  fi
+  if [ -L /usr/share/man/man1/sc.1.gz ] && [ "$(readlink /usr/share/man/man1/sc.1.gz)" = "regsc.1.gz" ]; then
+    rm -f /usr/share/man/man1/sc.1.gz
+  fi
+fi
+exit 0
+EOF
+chmod 0755 "$stage/DEBIAN/postinst" "$stage/DEBIAN/postrm"
+
 write_control "libreg-tools" \
-  "Description: Offline Windows registry tools (reg, sc)
- reg and sc read and edit Windows registry hive files on Linux. They are
+  "Description: Offline Windows registry tools (reg, regsc, regmount)
+ reg and regsc read and edit Windows registry hive files on Linux. They are
  modeled on the Windows reg.exe and sc.exe and operate on offline hives,
- mapping registry roots to files through a mount map." \
+ mapping registry roots to files through a mount map. regmount inspects hive
+ files and generates that mount map. regsc is installed under that name to
+ avoid the clash with the sc spreadsheet calculator; a sc alias is added on
+ install when no other package owns the name." \
   "libc6" ""
 build_pkg "libreg-tools"
 
@@ -80,49 +125,16 @@ stage="$out/stage-regedit"
 mkdir -p "$stage"
 install_file "$root/target/release/regedit" /usr/bin/regedit 0755
 gz "$here/man/regedit.1" /tmp/regedit.1.gz && install_file /tmp/regedit.1.gz /usr/share/man/man1/regedit.1.gz 0644
-install_file "$here/systemd/regedit.service" /lib/systemd/system/regedit.service 0644
-install_file "$here/conf/regedit.conf" /etc/libreg/regedit.conf 0644
-# State directory the systemd unit makes writable for hives and the mount map.
-mkdir -p "$stage/var/lib/libreg"
-
-# Preserve operator edits to the config file.
-mkdir -p "$stage/DEBIAN"
-echo "/etc/libreg/regedit.conf" > "$stage/DEBIAN/conffiles"
-
-# Maintainer scripts: reload systemd, never auto-start a network service.
-cat > "$stage/DEBIAN/postinst" <<'EOF'
-#!/bin/sh
-set -e
-if [ "$1" = "configure" ] && command -v systemctl >/dev/null 2>&1; then
-  systemctl daemon-reload || true
-  echo "regedit installed. Enable it with: systemctl enable --now regedit"
-fi
-exit 0
-EOF
-cat > "$stage/DEBIAN/prerm" <<'EOF'
-#!/bin/sh
-set -e
-if [ "$1" = "remove" ] && command -v systemctl >/dev/null 2>&1; then
-  systemctl stop regedit.service 2>/dev/null || true
-fi
-exit 0
-EOF
-cat > "$stage/DEBIAN/postrm" <<'EOF'
-#!/bin/sh
-set -e
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl daemon-reload 2>/dev/null || true
-fi
-exit 0
-EOF
-chmod 0755 "$stage/DEBIAN/postinst" "$stage/DEBIAN/prerm" "$stage/DEBIAN/postrm"
+# regedit is a local desktop-style tool: run it, it opens a browser. No systemd
+# unit, no system-wide config, no state directory; the mount map is per-user
+# ($LIBREG_HIVES or ~/.config/libreg/hives.conf).
 
 write_control "libreg-regedit" \
   "Description: Web-based offline registry editor (regedit)
  A browser based registry editor for offline hive files, modeled on the
  Windows registry editor, with editable SDDL security, hive validation, an
- on-disk structure inspector, and a two-hive diff. Ships a systemd unit that
- binds loopback by default." \
+ on-disk structure inspector, and a two-hive diff. Run it from a terminal and
+ it opens the editor in your browser; it binds loopback by default." \
   "libc6" ""
 build_pkg "libreg-regedit"
 
