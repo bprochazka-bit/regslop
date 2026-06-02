@@ -1,0 +1,55 @@
+name: Release client packages
+
+# Build the libreg client .deb packages and publish them as a GitHub Release.
+# Triggered by pushing a version tag (for example v0.1.0), or run manually with
+# a tag to create. The build uses only dpkg-deb and path-linked crates, so it
+# needs no crate registry (matching the project's no-registry-cache, native
+# binary constraints).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (for example v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build Debian packages
+        run: bash clients/packaging/build-deb.sh
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            clients/target/deb/*.deb \
+            --title "libreg clients ${{ steps.tag.outputs.tag }}" \
+            --generate-notes
