@@ -1,6 +1,31 @@
 # Harness: STATE
 
-Last updated: 2026-06-01
+Last updated: 2026-06-02
+
+## Client-differential mode (issue #68): all four phases done, green
+
+The proposal phasing (`clients/proposals/harness-client-differential.md`) is
+complete and green vs the live VM:
+
+- Phase 1: `reg add` / `reg delete` (REG types, nested keys, default values,
+  recursive delete).
+- Phase 2: `sc create` / `config` (offline SYSTEM hive vs live sc.exe + reg save).
+- Phase 3: `.reg` import (3a) and export-and-diff (3b).
+- Phase 4: a seeded `reg` operation fuzzer (`fuzz` tag).
+
+Latest full run: authored corpus **17/17** (`semantic`) + fuzz **12/12** over 264
+ops (`fuzz`), no failures. Three client divergences the differential surfaced were
+filed, fixed by the clients agent, and are now guarded: #71 (bare add, new key),
+#78 (sc ObjectName default), #84 (bare add, existing key). No corpus workarounds
+remain.
+
+**Remaining (optional, not blocking):** a `reg save` differential case, listed
+under the issue's own "edge cases" (our `reg save` writes a fresh hive rooted at
+the saved key while `reg.exe` snapshots the on-disk subtree, so the result hive
+must be defined identically on both sides). This is harness-side work (mine) if we
+want it before closing #68; nothing is blocked on another agent. Separately, the
+`tests/fuzz/` subtree (the fuzzer agent) is still just a CLAUDE doc; `run_fuzz` /
+`run_case` is the stable integration point if they later wire in their generator.
 
 ## Recovery tag: driven, no longer n/a (ADR 0004 / issue #61)
 
