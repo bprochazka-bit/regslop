@@ -28,6 +28,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "regmount"
+version = "0.1.0"
+dependencies = [
+ "cli-core",
+]
+
+[[package]]
 name = "winsc"
 version = "0.1.0"
 dependencies = [

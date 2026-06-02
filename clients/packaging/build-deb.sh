@@ -4,9 +4,10 @@
 # (no external cargo tooling, in keeping with the project's native-binary,
 # no-registry-cache constraints). Produces two packages under target/deb:
 #
-#   libreg-tools     /usr/bin/reg, /usr/bin/winsc, man pages, example mount map.
-#                    winsc gets a `sc` alias only when no other package owns
-#                    that name (Debian and Ubuntu ship `sc`, the calculator).
+#   libreg-tools     /usr/bin/reg, /usr/bin/winsc, /usr/bin/regmount, man
+#                    pages, example mount map. winsc gets a `sc` alias only
+#                    when no other package owns that name (Debian and Ubuntu
+#                    ship `sc`, the calculator).
 #   libreg-regedit   /usr/bin/regedit and its man page. regedit is a local
 #                    desktop-style tool that opens a browser, not a service.
 #
@@ -65,10 +66,12 @@ build_pkg() {
 # ---------------------------------------------------------------- libreg-tools
 stage="$out/stage-tools"
 mkdir -p "$stage"
-install_file "$root/target/release/reg"   /usr/bin/reg   0755
-install_file "$root/target/release/winsc" /usr/bin/winsc 0755
-gz "$here/man/reg.1"   /tmp/reg.1.gz   && install_file /tmp/reg.1.gz   /usr/share/man/man1/reg.1.gz   0644
-gz "$here/man/winsc.1" /tmp/winsc.1.gz && install_file /tmp/winsc.1.gz /usr/share/man/man1/winsc.1.gz 0644
+install_file "$root/target/release/reg"      /usr/bin/reg      0755
+install_file "$root/target/release/winsc"    /usr/bin/winsc    0755
+install_file "$root/target/release/regmount" /usr/bin/regmount 0755
+gz "$here/man/reg.1"      /tmp/reg.1.gz      && install_file /tmp/reg.1.gz      /usr/share/man/man1/reg.1.gz      0644
+gz "$here/man/winsc.1"    /tmp/winsc.1.gz    && install_file /tmp/winsc.1.gz    /usr/share/man/man1/winsc.1.gz    0644
+gz "$here/man/regmount.1" /tmp/regmount.1.gz && install_file /tmp/regmount.1.gz /usr/share/man/man1/regmount.1.gz 0644
 install_file "$here/conf/hives.conf.example" /usr/share/doc/libreg-tools/hives.conf.example 0644
 
 # Maintainer scripts: add a `sc` alias for winsc only when nothing else owns
@@ -107,12 +110,13 @@ EOF
 chmod 0755 "$stage/DEBIAN/postinst" "$stage/DEBIAN/postrm"
 
 write_control "libreg-tools" \
-  "Description: Offline Windows registry tools (reg, winsc)
+  "Description: Offline Windows registry tools (reg, winsc, regmount)
  reg and winsc read and edit Windows registry hive files on Linux. They are
  modeled on the Windows reg.exe and sc.exe and operate on offline hives,
- mapping registry roots to files through a mount map. winsc is installed under
- that name to avoid the clash with the sc spreadsheet calculator; a sc alias is
- added on install when no other package owns the name." \
+ mapping registry roots to files through a mount map. regmount inspects hive
+ files and generates that mount map. winsc is installed under that name to
+ avoid the clash with the sc spreadsheet calculator; a sc alias is added on
+ install when no other package owns the name." \
   "libc6" ""
 build_pkg "libreg-tools"
 

@@ -1,0 +1,84 @@
+.TH REGMOUNT 1 "2026-06-02" "libreg 0.1.0" "User Commands"
+.SH NAME
+regmount \- generate a libreg mount map by inspecting hive files
+.SH SYNOPSIS
+.B regmount
+.I PATH
+.RB [ \-o
+.IR FILE ]
+.RB [ \-r ]
+.RB [ \-f ]
+.SH DESCRIPTION
+.B regmount
+inspects offline registry hive files and generates a mount map binding each
+hive to the registry root and subpath it belongs at. An offline hive does not
+record where it hangs in the live registry, so
+.B regmount
+identifies it two ways: by its conventional file name
+.RB ( SYSTEM ,
+.BR SOFTWARE ,
+.BR SAM ,
+.BR SECURITY ,
+.BR NTUSER.DAT ,
+.BR UsrClass.dat ,
+and so on) and by the shape of its top-level keys (a
+.B Select
+plus a
+.B ControlSet001
+is a SYSTEM hive, a
+.B Microsoft
+plus a
+.B Classes
+is SOFTWARE, and so on). The file name is the primary signal; the contents
+confirm it or classify a hive whose name is nonstandard.
+.PP
+.I PATH
+is either a single hive file or a directory of hives, for example a mounted
+Windows
+.I System32\econfig
+directory or a user profile. The generated map is printed to standard output in
+the
+.I hives.conf
+format. Hives that cannot be placed, and any whose mount point collides with a
+hive already mapped, are written as comments so the result stays valid and you
+can finish it by hand. Registry transaction logs and similar companions
+.RI ( *.LOG ,
+.IR *.LOG1 ,
+.IR *.regtrans-ms ,
+.IR *.blf )
+are skipped.
+.SH OPTIONS
+.TP
+.BI \-o " FILE" "\fR,\fP \-\-output " FILE
+Also write the generated map to
+.IR FILE .
+Refuses to overwrite an existing file unless
+.B \-f
+is given.
+.TP
+.B \-r\fR,\fP \-\-recursive
+Recurse into subdirectories when
+.I PATH
+is a directory.
+.TP
+.B \-f\fR,\fP \-\-force
+Overwrite the
+.B \-o
+file if it already exists.
+.TP
+.B \-h\fR,\fP \-\-help
+Show usage and exit.
+.SH USAGE
+Point
+.B $LIBREG_HIVES
+at the written file, or copy it to
+.IR ~/.config/libreg/hives.conf ,
+to use it with
+.BR reg (1),
+.BR winsc (1),
+and
+.BR regedit (1).
+.SH SEE ALSO
+.BR reg (1),
+.BR winsc (1),
+.BR regedit (1)

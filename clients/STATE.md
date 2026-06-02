@@ -2,7 +2,36 @@
 
 Last updated: 2026-06-02 (clients agent)
 
-## Latest session (2026-06-02)
+## Latest session (2026-06-02, part 2): regmount
+
+Added a new tool, **`regmount`**, to libreg-tools: a mount-map generator. The
+user passes a path (a hive file or a directory of hives, for example a mounted
+`System32\config` or a user profile); it inspects each file, identifies the
+registry root/subpath it belongs at, prints a `hives.conf`-format map to stdout,
+and with `-o FILE` also writes it (refusing to overwrite without `-f`).
+
+- Identification lives in `cli-core/src/identify.rs` (`identify_hive`), so it is
+  reusable and unit tested. Two signals: the standard hive file name (SYSTEM,
+  SOFTWARE, SAM, SECURITY, COMPONENTS, DRIVERS, DEFAULT, NTUSER.DAT,
+  UsrClass.dat, BCD) and the top-level key shape (Select+ControlSet => SYSTEM,
+  Microsoft+Classes => SOFTWARE, SAM+Domains => SAM, Policy => SECURITY,
+  Software+Environment/Control Panel => user hive, Local Settings/`.ext` =>
+  user classes). File name is primary; contents confirm it or classify a
+  nonstandard name. A readable hive we cannot place returns `mount: None` (not an
+  error) so a scan can surface it.
+- `regmount` (`regmount/src/main.rs`): directory scan skips registry log and
+  transaction companions (`*.LOG`/`.LOG1`/`.LOG2`/`.regtrans-ms`/`.blf`), is
+  optionally recursive (`-r`), comments out hives it cannot place and any whose
+  mount point duplicates one already mapped (so the result stays a valid map),
+  prints the map to stdout and a summary plus skips to stderr.
+- cli-core gained 5 identify unit tests (35 total now, all green). Verified end
+  to end: a synthetic `config/` dir produced a correct map, the map drove a real
+  `reg query` (round trip), single-file mode, the overwrite guard, `--force`,
+  and the single-file-not-a-hive error all behave.
+- Packaging: `regmount` and `regmount.1` are added to `libreg-tools`
+  (build-deb.sh, README, man); workspace member added.
+
+## Latest session (2026-06-02, part 1)
 
 Two operator-facing changes:
 
@@ -30,17 +59,21 @@ create/qc and regedit (both `--no-browser` and default) were smoke tested.
 
 ## What this subtree is
 
-The Linux client utilities on top of libreg: `reg`, `sc`, and `regedit`,
-modeled on the Windows tools. A cargo workspace at `clients/` with four crates:
-`cli-core` (shared library), `reg`, `sc`, `regedit`. They link `libreg` by path
-and have no external crate dependencies (the build environment has no registry
-cache, and the project is Debian-first / native-binary), so the small amount of
-JSON and HTTP regedit needs is hand-rolled.
+The Linux client utilities on top of libreg: `reg`, `winsc`, `regedit`, and
+`regmount`. The first three are modeled on the Windows tools; `regmount` is a
+libreg-specific mount-map generator. A cargo workspace at `clients/` with five
+crates: `cli-core` (shared library), `reg`, `winsc`, `regedit`, `regmount`. They
+link `libreg` by path and have no external crate dependencies (the build
+environment has no registry cache, and the project is Debian-first /
+native-binary), so the small amount of JSON and HTTP regedit needs is
+hand-rolled.
 
 ## What works (this session)
 
 Everything below builds clean (`cargo build`), is clippy-clean
-(`cargo clippy --all-targets`), and `cli-core` has 22 green unit tests.
+(`cargo clippy --all-targets`), and `cli-core` has 35 green unit tests
+(including 5 new `identify` tests added with regmount this session). See the
+latest-session notes above for the winsc rename and the regmount addition.
 
 ### cli-core (shared)
 - `path`: parse `HKLM\...` / `HKEY_LOCAL_MACHINE\...` registry paths (long and

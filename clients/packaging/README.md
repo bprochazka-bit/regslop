@@ -13,9 +13,10 @@ clients/packaging/build-deb.sh
 This builds the release binaries and writes two packages to
 `clients/target/deb/`:
 
-- **libreg-tools** `/usr/bin/reg`, `/usr/bin/winsc`, their man pages, and an
-  example mount map in `/usr/share/doc/libreg-tools/`. On install, a `sc` alias
-  for `winsc` is added only when no other package owns that name.
+- **libreg-tools** `/usr/bin/reg`, `/usr/bin/winsc`, `/usr/bin/regmount`, their
+  man pages, and an example mount map in `/usr/share/doc/libreg-tools/`. On
+  install, a `sc` alias for `winsc` is added only when no other package owns
+  that name.
 - **libreg-regedit** `/usr/bin/regedit` and its man page. regedit is a local
   desktop-style tool, not a service: run it and it opens the editor in your
   browser.
@@ -30,10 +31,15 @@ sudo dpkg -i clients/target/deb/libreg-regedit_0.1.0_amd64.deb
 Then just run the tools:
 
 ```bash
+regmount /mnt/win/Windows/System32/config -o ~/.config/libreg/hives.conf
 reg query HKLM\\SYSTEM\\...      # reg
 winsc qc <service>               # or `sc qc <service>` if the alias was added
 regedit                          # opens the editor in your browser
 ```
+
+`regmount` inspects a hive file or a directory of hives and prints a ready to
+use mount map (and writes one with `-o`), so you do not have to hand-author
+`hives.conf`.
 
 `regedit` binds 127.0.0.1 and opens your browser once it is listening. Pass
 `--no-browser` on a headless host (it prints the URL to open by hand), and only
