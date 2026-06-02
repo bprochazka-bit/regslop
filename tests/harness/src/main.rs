@@ -55,6 +55,14 @@ struct Args {
     /// crash-injection hook against the libreg agent and reports a `recovery`
     /// pass rate.
     recovery_tests_dir: Option<PathBuf>,
+    /// Number of fuzzed `reg` operation sequences to run through the client
+    /// differential (0 = off). Reported under the `fuzz` tag.
+    client_fuzz: u32,
+    /// Base seed for the client fuzzer (sequence i uses `seed + i`); fixed by
+    /// default so runs are reproducible.
+    client_fuzz_seed: u64,
+    /// Operations per fuzzed sequence (batched into one VM round-trip).
+    client_fuzz_ops: u32,
 }
 
 impl Default for Args {
@@ -76,6 +84,9 @@ impl Default for Args {
             reg_bin: None,
             sc_bin: None,
             recovery_tests_dir: None,
+            client_fuzz: 0,
+            client_fuzz_seed: 0x5EED_1B5E_0000_0001,
+            client_fuzz_ops: 20,
         }
     }
 }
@@ -107,13 +118,19 @@ fn parse_args() -> Args {
             "--reg-bin" => a.reg_bin = Some(PathBuf::from(next())),
             "--sc-bin" => a.sc_bin = Some(PathBuf::from(next())),
             "--recovery-tests-dir" => a.recovery_tests_dir = Some(PathBuf::from(next())),
+            "--client-fuzz" => a.client_fuzz = next().parse().unwrap_or_else(|_| fatal("bad --client-fuzz")),
+            "--client-fuzz-seed" => a.client_fuzz_seed = next().parse().unwrap_or_else(|_| fatal("bad --client-fuzz-seed")),
+            "--client-fuzz-ops" => a.client_fuzz_ops = next().parse().unwrap_or_else(|_| fatal("bad --client-fuzz-ops")),
             "-h" | "--help" => {
                 println!(
                     "libreg-harness [--linux-host H] [--linux-port N] \\\n  \
                      [--windows-host H] [--windows-port N] [--tests-dir DIR] \\\n  \
                      [--results-dir DIR] [--lock-path PATH] [--tag TAG] \\\n  \
                      [--linux-hive-dir DIR] [--windows-hive-dir DIR] \\\n  \
-                     [--corpus-dir DIR] [--windows-smb]"
+                     [--corpus-dir DIR] [--windows-smb] \\\n  \
+                     [--client-tests-dir DIR] [--reg-bin PATH] [--sc-bin PATH] \\\n  \
+                     [--recovery-tests-dir DIR] \\\n  \
+                     [--client-fuzz N] [--client-fuzz-seed S] [--client-fuzz-ops K]"
                 );
                 std::process::exit(0);
             }
@@ -174,7 +191,7 @@ fn load_tests(dir: &PathBuf) -> Vec<TestDef> {
 /// Client-differential mode: run the reg/sc CLI tests under `dir` against the
 /// Windows tools on the VM, using `agent` (the libreg agent) to canonicalize
 /// both result hives. Holds the VM flock for the run.
-fn run_client_differential(agent: &Client, args: &Args, dir: &PathBuf) -> ExitCode {
+fn run_client_differential(agent: &Client, args: &Args) -> ExitCode {
     let vm_host = match &args.windows_host {
         Some(h) => split_host_port(h, 0).0,
         None => fatal("client-differential mode needs --windows-host (the VM)"),
@@ -182,29 +199,64 @@ fn run_client_differential(agent: &Client, args: &Args, dir: &PathBuf) -> ExitCo
     if args.reg_bin.is_none() && args.sc_bin.is_none() {
         fatal("client-differential mode needs --reg-bin and/or --sc-bin");
     }
+    if args.client_fuzz > 0 && args.reg_bin.is_none() {
+        fatal("--client-fuzz needs --reg-bin (it fuzzes reg)");
+    }
     let _lock = winvm_lock::WinVmLock::acquire(&args.lock_path).unwrap_or_else(|e| fatal(e));
     eprintln!("Client-differential vs reg.exe/sc.exe on {vm_host}");
 
-    let results =
-        client_differ::run(agent, &vm_host, args.reg_bin.as_deref(), args.sc_bin.as_deref(), dir);
+    let mut all_passed = true;
+
+    // Authored corpus (if a tests dir is given). Spec ruling (issue #68): the
+    // client differential asserts the same canonical-JSON equality as the agent
+    // path, so it reports under the existing `semantic` tag.
+    if let Some(dir) = &args.client_tests_dir {
+        let results =
+            client_differ::run(agent, &vm_host, args.reg_bin.as_deref(), args.sc_bin.as_deref(), dir);
+        all_passed &= report_client("semantic", &results);
+    }
+
+    // Fuzzed reg sequences, reported under the `fuzz` tag.
+    if args.client_fuzz > 0 {
+        let repro_dir = args.results_dir.join("client-fuzz");
+        let reg_bin = args.reg_bin.as_deref().unwrap();
+        eprintln!(
+            "\nFuzzing reg: {} sequences x {} ops (base seed {:#018x})",
+            args.client_fuzz, args.client_fuzz_ops, args.client_fuzz_seed
+        );
+        let results = client_differ::run_fuzz(
+            agent,
+            &vm_host,
+            reg_bin,
+            args.client_fuzz,
+            args.client_fuzz_seed,
+            args.client_fuzz_ops,
+            &repro_dir,
+        );
+        all_passed &= report_client("fuzz", &results);
+    }
+
+    if all_passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
+}
+
+/// Print per-case verdicts and a `<tag> (client-differential): passed/total`
+/// summary; return whether every case passed.
+fn report_client(tag: &str, results: &[client_differ::CaseResult]) -> bool {
     let total = results.len();
     let passed = results.iter().filter(|r| r.passed).count();
     eprintln!();
-    for r in &results {
+    for r in results {
         eprintln!("  {:34} {}", r.name, if r.passed { "PASS" } else { "FAIL" });
         if !r.passed {
             eprintln!("      {}", r.detail);
         }
     }
-    // Spec ruling (issue #68): the client differential asserts the same
-    // canonical-JSON equality as the agent path, so it reports under the
-    // existing `semantic` tag, not a separate `client-semantic` one.
-    eprintln!("\nsemantic (client-differential): {passed}/{total}");
-    if total > 0 && passed == total {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(1)
-    }
+    eprintln!("\n{tag} (client-differential): {passed}/{total}");
+    total > 0 && passed == total
 }
 
 fn main() -> ExitCode {
@@ -234,8 +286,8 @@ fn main() -> ExitCode {
     // Client-differential mode: validate the reg/sc CLIs vs the Windows tools.
     // Uses the (libreg) agent only to canonicalize result hives; no Windows
     // agent, so dispatch before the Windows handshake.
-    if let Some(dir) = &args.client_tests_dir {
-        return run_client_differential(&linux, &args, dir);
+    if args.client_tests_dir.is_some() || args.client_fuzz > 0 {
+        return run_client_differential(&linux, &args);
     }
 
     let mut windows_backend = None;

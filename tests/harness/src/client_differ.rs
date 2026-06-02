@@ -535,6 +535,170 @@ fn diff_reg(
     diffs
 }
 
+// --- fuzz: generated reg operation sequences ---
+
+/// Run `count` fuzzed `reg` operation sequences through the client differential.
+/// Each sequence is fully determined by its seed (`base_seed + i`), so a failure
+/// is reproducible: the generated ops are written to `repro_dir/<name>.yaml`, a
+/// file you can drop into `--client-tests-dir` to replay it. Every case batches
+/// `ops_per` operations into one load/operate/unload VM round-trip, so the cost
+/// is one round-trip per sequence, not per op.
+pub fn run_fuzz(
+    agent: &Client,
+    vm_host: &str,
+    reg_bin: &Path,
+    count: u32,
+    base_seed: u64,
+    ops_per: u32,
+    repro_dir: &Path,
+) -> Vec<CaseResult> {
+    if let Err(e) = make_seed(agent) {
+        return vec![CaseResult { name: "<seed>".into(), passed: false, detail: e }];
+    }
+    let mut results = Vec::new();
+    for i in 0..count {
+        let seed = base_seed.wrapping_add(i as u64);
+        let ops = gen_sequence(seed, ops_per);
+        let test = ClientTest {
+            name: format!("fuzz_{seed:016x}"),
+            kind: "reg".to_string(),
+            service: None,
+            reg: None,
+            export: None,
+            ops: ops.clone(),
+        };
+        let mut r = run_case(agent, vm_host, reg_bin, &test);
+        if !r.passed {
+            let path = repro_dir.join(format!("{}.yaml", test.name));
+            let body = format!(
+                "# Reproduces fuzz seed {seed:#018x} ({ops_per} ops). Replay with\n\
+                 # --client-tests-dir pointing at this directory.\nname: {}\nops:\n{}",
+                test.name,
+                ops.iter().map(|o| format!("  - {o}\n")).collect::<String>(),
+            );
+            let _ = std::fs::create_dir_all(repro_dir);
+            let saved = std::fs::write(&path, body).is_ok();
+            r.detail = format!(
+                "seed={seed:#018x}{} :: {}",
+                if saved { format!(" repro={}", path.display()) } else { String::new() },
+                r.detail,
+            );
+        }
+        results.push(r);
+    }
+    results
+}
+
+/// SplitMix64: a tiny seedable PRNG (no external crates), so each fuzz sequence
+/// is deterministic from its seed.
+struct Rng(u64);
+impl Rng {
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next_u64() % n
+    }
+    fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
+        &xs[self.below(xs.len() as u64) as usize]
+    }
+}
+
+/// Generate one valid `reg` op sequence. Existence is tracked so a generated
+/// delete always targets a key/value that the sequence created earlier: every op
+/// then succeeds on both sides, and any resulting hive difference is a genuine
+/// semantic divergence rather than an "operation failed" artifact.
+fn gen_sequence(seed: u64, n: u32) -> Vec<String> {
+    const SEGS: &[&str] = &["S", "A", "B", "C", "D"];
+    const NAMES: &[&str] = &["v0", "v1", "v2", "v3"];
+    const TYPES: &[&str] =
+        &["REG_SZ", "REG_DWORD", "REG_QWORD", "REG_BINARY", "REG_MULTI_SZ", "REG_EXPAND_SZ"];
+
+    let mut r = Rng(seed ^ 0xD1B5_4A32_D192_ED03);
+    let mut keys: Vec<String> = Vec::new();
+    let mut vals: Vec<(String, String)> = Vec::new();
+    let mut ops = Vec::new();
+
+    let rand_key = |r: &mut Rng| {
+        let depth = 1 + r.below(3); // 1..=3 segments under Software
+        let mut k = String::from("Software");
+        for _ in 0..depth {
+            k.push('\\');
+            k.push_str(r.pick(SEGS));
+        }
+        k
+    };
+
+    // Bare `add KEY /f` is intentionally not generated: the newly-created case is
+    // covered by the authored corpus (bare_key_default_value), and the
+    // already-exists case is a known divergence (reg.exe stamps an empty default
+    // value on an existing key, our reg does not), filed for the clients agent.
+    for _ in 0..n {
+        match r.below(100) {
+            // delete a value that exists
+            d if d < 25 && !vals.is_empty() => {
+                let idx = r.below(vals.len() as u64) as usize;
+                let (k, name) = vals.remove(idx);
+                ops.push(format!("delete {k} /v {name} /f"));
+            }
+            // delete a key that exists (recursively, like reg.exe)
+            d if d < 45 && !keys.is_empty() => {
+                let idx = r.below(keys.len() as u64) as usize;
+                let k = keys.remove(idx);
+                let prefix = format!("{k}\\");
+                keys.retain(|e| !e.starts_with(&prefix));
+                vals.retain(|(vk, _)| vk != &k && !vk.starts_with(&prefix));
+                ops.push(format!("delete {k} /f"));
+            }
+            // add (or overwrite) a value
+            _ => {
+                let k = rand_key(&mut r);
+                let name = *r.pick(NAMES);
+                let ty = *r.pick(TYPES);
+                let data = gen_data(&mut r, ty);
+                if !keys.contains(&k) {
+                    keys.push(k.clone());
+                }
+                let pair = (k.clone(), name.to_string());
+                if !vals.contains(&pair) {
+                    vals.push(pair);
+                }
+                ops.push(format!("add {k} /v {name} /t {ty} /d {data} /f"));
+            }
+        }
+    }
+    ops
+}
+
+/// Type-appropriate, round-trip-safe value data (no spaces, quotes, or
+/// backslashes that would need shell/`.reg` escaping at this stage).
+fn gen_data(r: &mut Rng, ty: &str) -> String {
+    match ty {
+        "REG_DWORD" => format!("{}", r.next_u64() as u32),
+        "REG_QWORD" => format!("{}", r.next_u64()),
+        "REG_BINARY" => {
+            let len = 1 + r.below(12);
+            (0..len).map(|_| format!("{:02x}", r.below(256))).collect()
+        }
+        "REG_MULTI_SZ" => {
+            let parts = 1 + r.below(3);
+            (0..parts).map(|i| format!("s{i}")).collect::<Vec<_>>().join("\\0")
+        }
+        // An undefined variable name: cmd.exe leaves `%FZnn%` literal (a real env
+        // var like %WINDIR% would be expanded by the Windows-side shell transport
+        // before reg.exe sees it, which is a harness artifact, not a reg result).
+        "REG_EXPAND_SZ" => format!("%FZ{:02}%", r.below(100)),
+        _ => {
+            let len = 1 + r.below(8);
+            (0..len).map(|_| (b'a' + r.below(26) as u8) as char).collect()
+        }
+    }
+}
+
 // --- helpers ---
 
 /// Create a fresh empty hive via the libreg agent for use as the seed.
