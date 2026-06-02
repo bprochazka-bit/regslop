@@ -1,20 +1,20 @@
-.TH WINSC 1 "2026-06-02" "libreg 0.1.0" "User Commands"
+.TH REGSC 1 "2026-06-02" "libreg 0.1.0" "User Commands"
 .SH NAME
-winsc \- offline Windows service configuration tool
+regsc \- offline Windows service configuration tool
 .SH SYNOPSIS
-.B winsc
+.B regsc
 .I command
 .RI [ service ]
 .RI [ options ]
 .SH DESCRIPTION
-.B winsc
+.B regsc
 edits Windows service definitions stored in a registry
 .B SYSTEM
 hive, modeled on the Windows
 .BR sc.exe .
 It is named
-.B winsc
-to avoid the name clash with the
+.B regsc
+(part of the reg* tool family) to avoid the name clash with the
 .BR sc (1)
 spreadsheet calculator that Debian and Ubuntu ship. When no other package
 owns that name, installation adds a
@@ -45,25 +45,25 @@ and is selected with
 .IR N .
 .SH COMMANDS
 .TP
-.BI "winsc create " "name " "binPath= path [type= ...] [start= ...] [error= ...] [DisplayName= ...] [depend= a/b] [obj= ...] [group= ...]"
+.BI "regsc create " "name " "binPath= path [type= ...] [start= ...] [error= ...] [DisplayName= ...] [depend= a/b] [obj= ...] [group= ...]"
 Create a service key with the given configuration. Note the
 .BR "key= value"
 form: a space follows the equals sign, as in
 .BR sc.exe .
 .TP
-.BI "winsc config " "name " "[options]"
+.BI "regsc config " "name " "[options]"
 Change an existing service's configuration.
 .TP
-.BI "winsc delete " "name"
+.BI "regsc delete " "name"
 Delete a service.
 .TP
-.BI "winsc qc " "name"
+.BI "regsc qc " "name"
 Print a service's configuration.
 .TP
-.BI "winsc query " "[name]"
+.BI "regsc query " "[name]"
 List services or print one. The dynamic run state is not available offline.
 .TP
-.BI "winsc description " "name text"
+.BI "regsc description " "name text"
 Set a service's description.
 .SH OPTION VALUES
 .TP

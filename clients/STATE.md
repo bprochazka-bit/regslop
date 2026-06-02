@@ -2,6 +2,19 @@
 
 Last updated: 2026-06-02 (clients agent)
 
+## Latest session (2026-06-02, part 3): regsc rename
+
+Renamed the service tool from `winsc` to **`regsc`** so it sits in the reg* tool
+family alongside `reg`, `regedit`, and `regmount`. (It had briefly shipped as
+`winsc`; the original reason for moving off the bare name `sc` is the clash with
+the `sc` spreadsheet calculator on Debian and Ubuntu, which still holds.) The
+crate, binary, and man page are now `regsc` (`clients/regsc/`, `/usr/bin/regsc`,
+`regsc.1`). The sc.exe verb grammar is unchanged, and the conditional `sc` alias
+(added on install only when no other package owns the name, removed on uninstall
+only if it still points at `regsc`) is unchanged. The notes below that say
+"winsc" predate this and now read "regsc"; the harness should point `--sc-bin`
+at `target/release/regsc`.
+
 ## Latest session (2026-06-02, part 2): regmount
 
 Added a new tool, **`regmount`**, to libreg-tools: a mount-map generator. The
@@ -35,15 +48,15 @@ and with `-o FILE` also writes it (refusing to overwrite without `-f`).
 
 Two operator-facing changes:
 
-1. **`sc` renamed to `winsc`.** The service tool's crate, binary, and man page
-   are now `winsc` (`clients/winsc/`, `/usr/bin/winsc`, `winsc.1`). This avoids
+1. **`sc` renamed to `regsc`.** The service tool's crate, binary, and man page
+   are now `regsc` (`clients/regsc/`, `/usr/bin/regsc`, `regsc.1`). This avoids
    the name clash with the `sc` spreadsheet calculator that Debian and Ubuntu
    ship. The verb grammar is unchanged and sc.exe-identical. `libreg-tools`
-   postinst adds a `/usr/bin/sc` symlink to `winsc` (and a `sc.1.gz` man symlink)
+   postinst adds a `/usr/bin/sc` symlink to `regsc` (and a `sc.1.gz` man symlink)
    only when no `sc` command already exists; postrm removes those symlinks only
-   if they still point at `winsc`. So on a clean box `sc create ...` still works;
-   where the calculator is installed, users invoke `winsc`. The harness should
-   point `--sc-bin` at `target/release/winsc`.
+   if they still point at `regsc`. So on a clean box `sc create ...` still works;
+   where the calculator is installed, users invoke `regsc`. The harness should
+   point `--sc-bin` at `target/release/regsc`.
 2. **`regedit` is no longer a systemd service.** It is a local desktop-style
    tool: it binds, prints its URL, and opens the UI in the default browser
    (xdg-open / gio / sensible-browser / x-www-browser / www-browser, best
@@ -54,15 +67,15 @@ Two operator-facing changes:
    maintainer scripts, no state dir). It still binds 127.0.0.1 by default.
 
 Both packages build with `packaging/build-deb.sh` and were inspected with
-`dpkg-deb -c`/`-I`. Workspace builds clean, clippy-clean, tests pass. winsc
+`dpkg-deb -c`/`-I`. Workspace builds clean, clippy-clean, tests pass. regsc
 create/qc and regedit (both `--no-browser` and default) were smoke tested.
 
 ## What this subtree is
 
-The Linux client utilities on top of libreg: `reg`, `winsc`, `regedit`, and
+The Linux client utilities on top of libreg: `reg`, `regsc`, `regedit`, and
 `regmount`. The first three are modeled on the Windows tools; `regmount` is a
 libreg-specific mount-map generator. A cargo workspace at `clients/` with five
-crates: `cli-core` (shared library), `reg`, `winsc`, `regedit`, `regmount`. They
+crates: `cli-core` (shared library), `reg`, `regsc`, `regedit`, `regmount`. They
 link `libreg` by path and have no external crate dependencies (the build
 environment has no registry cache, and the project is Debian-first /
 native-binary), so the small amount of JSON and HTTP regedit needs is
@@ -73,7 +86,7 @@ hand-rolled.
 Everything below builds clean (`cargo build`), is clippy-clean
 (`cargo clippy --all-targets`), and `cli-core` has 35 green unit tests
 (including 5 new `identify` tests added with regmount this session). See the
-latest-session notes above for the winsc rename and the regmount addition.
+latest-session notes above for the regsc rename and the regmount addition.
 
 ### cli-core (shared)
 - `path`: parse `HKLM\...` / `HKEY_LOCAL_MACHINE\...` registry paths (long and
@@ -122,8 +135,8 @@ latest-session notes above for the winsc rename and the regmount addition.
   `reg load` then query through the mount map, value delete, `/f` searches with
   scope/case/exact, `/t` filtering, and compare exit codes.
 
-### winsc (offline service config over a SYSTEM hive)
-(Binary renamed from `sc` to `winsc` in the 2026-06-02 session; verb grammar
+### regsc (offline service config over a SYSTEM hive)
+(Binary renamed from `sc` to `regsc` in the 2026-06-02 session; verb grammar
 unchanged. See the latest-session note at the top.)
 - Verbs: create, config, delete, qc, query (static fields), description. The
   `key= value` (space-after-equals) syntax is supported, plus the combined
@@ -146,13 +159,13 @@ unchanged. See the latest-session note at the top.)
 
 ### packaging (Debian-first, rule 5)
 - `packaging/build-deb.sh` builds two `.deb` packages with `dpkg-deb` only (no
-  external tooling): `libreg-tools` (reg, winsc, man pages, example mount map,
+  external tooling): `libreg-tools` (reg, regsc, man pages, example mount map,
   plus a postinst/postrm that manage the conditional `sc` alias) and
   `libreg-regedit` (regedit + man page only). Man pages in `packaging/man/`.
   (The systemd unit and `packaging/conf/regedit.conf` were removed in the
   2026-06-02 session; regedit is no longer a service.)
 - Verified: both packages build and were inspected with `dpkg-deb -c`/`-I`.
-  `libreg-tools` ships `/usr/bin/winsc` with the conditional-`sc`-alias scripts;
+  `libreg-tools` ships `/usr/bin/regsc` with the conditional-`sc`-alias scripts;
   `libreg-regedit` ships only `/usr/bin/regedit` and its man page (no maintainer
   scripts, no conffile, no state dir). regedit binds 127.0.0.1 by default.
 
@@ -208,7 +221,7 @@ unchanged. See the latest-session note at the top.)
 4. `reg query` search flags (`/f` `/k` `/d` `/c` `/e` `/t`) and `reg compare`
    output modes (`/oa` `/od` `/os` `/on`) with exit codes: DONE this session.
    Remaining reg.exe flags are lower value (`/z`, `/se`, `/reg:32|64`).
-5. `.deb` packaging for reg/winsc and a `.deb` for regedit: DONE
+5. `.deb` packaging for reg/regsc and a `.deb` for regedit: DONE
    (`packaging/`). regedit ships as a browser-launching tool, not a service
    (changed 2026-06-02). Future: CI to build and attach the debs, and a source
    package (debian/ dir) if upstreaming to a Debian repo.

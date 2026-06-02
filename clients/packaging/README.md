@@ -13,9 +13,9 @@ clients/packaging/build-deb.sh
 This builds the release binaries and writes two packages to
 `clients/target/deb/`:
 
-- **libreg-tools** `/usr/bin/reg`, `/usr/bin/winsc`, `/usr/bin/regmount`, their
+- **libreg-tools** `/usr/bin/reg`, `/usr/bin/regsc`, `/usr/bin/regmount`, their
   man pages, and an example mount map in `/usr/share/doc/libreg-tools/`. On
-  install, a `sc` alias for `winsc` is added only when no other package owns
+  install, a `sc` alias for `regsc` is added only when no other package owns
   that name.
 - **libreg-regedit** `/usr/bin/regedit` and its man page. regedit is a local
   desktop-style tool, not a service: run it and it opens the editor in your
@@ -33,7 +33,7 @@ Then just run the tools:
 ```bash
 regmount /mnt/win/Windows/System32/config -o ~/.config/libreg/hives.conf
 reg query HKLM\\SYSTEM\\...      # reg
-winsc qc <service>               # or `sc qc <service>` if the alias was added
+regsc qc <service>               # or `sc qc <service>` if the alias was added
 regedit                          # opens the editor in your browser
 ```
 
@@ -48,10 +48,10 @@ has no authentication of its own.
 
 ## Notes
 
-- The service binary is installed as `winsc`, not `sc`, because Debian and
+- The service binary is installed as `regsc`, not `sc`, because Debian and
   Ubuntu ship `sc` (the spreadsheet calculator). The package adds a `/usr/bin/sc`
-  symlink to `winsc` only when no `sc` command already exists, and removes that
-  symlink on uninstall only if it still points at `winsc`. `reg` and `regedit`
+  symlink to `regsc` only when no `sc` command already exists, and removes that
+  symlink on uninstall only if it still points at `regsc`. `reg` and `regedit`
   keep their Windows command names; check for local conflicts before deploying
   widely.
 - The packages depend only on `libc6`; everything else is statically linked

@@ -4,8 +4,8 @@
 # (no external cargo tooling, in keeping with the project's native-binary,
 # no-registry-cache constraints). Produces two packages under target/deb:
 #
-#   libreg-tools     /usr/bin/reg, /usr/bin/winsc, /usr/bin/regmount, man
-#                    pages, example mount map. winsc gets a `sc` alias only
+#   libreg-tools     /usr/bin/reg, /usr/bin/regsc, /usr/bin/regmount, man
+#                    pages, example mount map. regsc gets a `sc` alias only
 #                    when no other package owns that name (Debian and Ubuntu
 #                    ship `sc`, the calculator).
 #   libreg-regedit   /usr/bin/regedit and its man page. regedit is a local
@@ -67,14 +67,14 @@ build_pkg() {
 stage="$out/stage-tools"
 mkdir -p "$stage"
 install_file "$root/target/release/reg"      /usr/bin/reg      0755
-install_file "$root/target/release/winsc"    /usr/bin/winsc    0755
+install_file "$root/target/release/regsc"    /usr/bin/regsc    0755
 install_file "$root/target/release/regmount" /usr/bin/regmount 0755
 gz "$here/man/reg.1"      /tmp/reg.1.gz      && install_file /tmp/reg.1.gz      /usr/share/man/man1/reg.1.gz      0644
-gz "$here/man/winsc.1"    /tmp/winsc.1.gz    && install_file /tmp/winsc.1.gz    /usr/share/man/man1/winsc.1.gz    0644
+gz "$here/man/regsc.1"    /tmp/regsc.1.gz    && install_file /tmp/regsc.1.gz    /usr/share/man/man1/regsc.1.gz    0644
 gz "$here/man/regmount.1" /tmp/regmount.1.gz && install_file /tmp/regmount.1.gz /usr/share/man/man1/regmount.1.gz 0644
 install_file "$here/conf/hives.conf.example" /usr/share/doc/libreg-tools/hives.conf.example 0644
 
-# Maintainer scripts: add a `sc` alias for winsc only when nothing else owns
+# Maintainer scripts: add a `sc` alias for regsc only when nothing else owns
 # that name. Debian and Ubuntu ship `sc` (the spreadsheet calculator), so we
 # never overwrite an existing command, and we only remove an alias we created.
 mkdir -p "$stage/DEBIAN"
@@ -83,13 +83,13 @@ cat > "$stage/DEBIAN/postinst" <<'EOF'
 set -e
 if [ "$1" = "configure" ]; then
   if [ ! -e /usr/bin/sc ] && ! command -v sc >/dev/null 2>&1; then
-    ln -s winsc /usr/bin/sc
-    if [ -e /usr/share/man/man1/winsc.1.gz ] && [ ! -e /usr/share/man/man1/sc.1.gz ]; then
-      ln -s winsc.1.gz /usr/share/man/man1/sc.1.gz
+    ln -s regsc /usr/bin/sc
+    if [ -e /usr/share/man/man1/regsc.1.gz ] && [ ! -e /usr/share/man/man1/sc.1.gz ]; then
+      ln -s regsc.1.gz /usr/share/man/man1/sc.1.gz
     fi
-    echo "winsc: installed a 'sc' alias (no conflicting 'sc' command was found)."
+    echo "regsc: installed a 'sc' alias (no conflicting 'sc' command was found)."
   else
-    echo "winsc: a 'sc' command already exists; invoke this tool as 'winsc'."
+    echo "regsc: a 'sc' command already exists; invoke this tool as 'regsc'."
   fi
 fi
 exit 0
@@ -98,10 +98,10 @@ cat > "$stage/DEBIAN/postrm" <<'EOF'
 #!/bin/sh
 set -e
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
-  if [ -L /usr/bin/sc ] && [ "$(readlink /usr/bin/sc)" = "winsc" ]; then
+  if [ -L /usr/bin/sc ] && [ "$(readlink /usr/bin/sc)" = "regsc" ]; then
     rm -f /usr/bin/sc
   fi
-  if [ -L /usr/share/man/man1/sc.1.gz ] && [ "$(readlink /usr/share/man/man1/sc.1.gz)" = "winsc.1.gz" ]; then
+  if [ -L /usr/share/man/man1/sc.1.gz ] && [ "$(readlink /usr/share/man/man1/sc.1.gz)" = "regsc.1.gz" ]; then
     rm -f /usr/share/man/man1/sc.1.gz
   fi
 fi
@@ -110,11 +110,11 @@ EOF
 chmod 0755 "$stage/DEBIAN/postinst" "$stage/DEBIAN/postrm"
 
 write_control "libreg-tools" \
-  "Description: Offline Windows registry tools (reg, winsc, regmount)
- reg and winsc read and edit Windows registry hive files on Linux. They are
+  "Description: Offline Windows registry tools (reg, regsc, regmount)
+ reg and regsc read and edit Windows registry hive files on Linux. They are
  modeled on the Windows reg.exe and sc.exe and operate on offline hives,
  mapping registry roots to files through a mount map. regmount inspects hive
- files and generates that mount map. winsc is installed under that name to
+ files and generates that mount map. regsc is installed under that name to
  avoid the clash with the sc spreadsheet calculator; a sc alias is added on
  install when no other package owns the name." \
   "libc6" ""

@@ -1,4 +1,4 @@
-//! Shared core for the libreg client utilities (`reg`, `winsc`, `regedit`,
+//! Shared core for the libreg client utilities (`reg`, `regsc`, `regedit`,
 //! `regmount`).
 //!
 //! This crate links `libreg` directly and drives `libreg::logical::Hive`

@@ -266,6 +266,6 @@ fn print_usage() {
          \n\
          The output uses the hives.conf format ('ROOT\\subpath = /path/to/hive').\n\
          Point $LIBREG_HIVES at the written file, or copy it to\n\
-         ~/.config/libreg/hives.conf, to use it with reg, winsc, and regedit."
+         ~/.config/libreg/hives.conf, to use it with reg, regsc, and regedit."
     );
 }
