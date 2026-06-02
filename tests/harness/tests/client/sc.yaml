@@ -1,22 +1,22 @@
 # sc differential: our sc (offline SYSTEM hive) vs live sc.exe (the Services
-# subtree is reg-saved and compared). obj= LocalSystem is set explicitly because
-# a bare create defaults ObjectName to LocalSystem in sc.exe but our sc omits it
-# (a known divergence, tracked separately).
+# subtree is reg-saved and compared). A bare create (no obj=) defaults ObjectName
+# to LocalSystem for win32 services in both tools as of clients #78, so these
+# cases omit obj= to exercise that default.
 name: sc_create_own
 kind: sc
 service: HarnessOwn
 ops:
-  - create HarnessOwn binPath= C:\own.exe type= own start= demand error= normal obj= LocalSystem DisplayName= HarnessOwn
+  - create HarnessOwn binPath= C:\own.exe type= own start= demand error= normal DisplayName= HarnessOwn
 ---
 name: sc_create_share_auto
 kind: sc
 service: HarnessShare
 ops:
-  - create HarnessShare binPath= C:\share.exe type= share start= auto error= normal obj= LocalSystem DisplayName= HarnessShare
+  - create HarnessShare binPath= C:\share.exe type= share start= auto error= normal DisplayName= HarnessShare
 ---
 name: sc_create_then_config
 kind: sc
 service: HarnessCfg
 ops:
-  - create HarnessCfg binPath= C:\cfg.exe type= own start= demand error= normal obj= LocalSystem DisplayName= HarnessCfg
+  - create HarnessCfg binPath= C:\cfg.exe type= own start= demand error= normal DisplayName= HarnessCfg
   - config HarnessCfg start= auto error= severe

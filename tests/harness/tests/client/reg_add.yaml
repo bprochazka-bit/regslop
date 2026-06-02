@@ -9,9 +9,6 @@ ops:
   - add Software\App /v Qword /t REG_QWORD /d 4294967296 /f
 ---
 name: add_nested_keys
-# The leaf carries a value: a *bare* `reg add KEY /f` (no /v) is a known
-# divergence (reg.exe leaves an empty default value on the new leaf, our reg
-# does not), tracked separately, so it is kept out of the green corpus.
 ops:
   - add Software\A\B\C\D /v Leaf /t REG_DWORD /d 9 /f
   - add Software\A\B /v Marker /t REG_DWORD /d 1 /f
@@ -28,3 +25,9 @@ name: add_then_overwrite
 ops:
   - add Software\App /v V /t REG_SZ /d first /f
   - add Software\App /v V /t REG_DWORD /d 7 /f
+---
+# A bare `reg add KEY /f` (no /v): reg.exe stamps the new leaf with an empty
+# default value (intermediates get none); our reg matches as of clients #71.
+name: bare_key_default_value
+ops:
+  - add Software\Bare\Leaf /f
