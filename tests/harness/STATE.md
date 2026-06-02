@@ -26,6 +26,21 @@ Depends on the agent PR (`/test/crash_save` + log-backed save/load); built and
 verified together. Once both land, the spec agent can add `/test/crash_save` to
 CONTRACTS (MINOR, Linux-only) per ADR 0004.
 
+## Client fixes #71 and #78 validated, corpus workarounds dropped
+
+Both clients-agent fixes the differential surfaced have merged to main and are now
+exercised without workarounds:
+
+- #71 (reg bare-key default value, commit b2d884a): re-added the
+  `bare_key_default_value` case (`add Software\Bare\Leaf /f`, no `/v`). Confirmed
+  our reg now stamps the empty default value reg.exe creates.
+- #78 (sc ObjectName default, commit e811b26): dropped the explicit
+  `obj= LocalSystem` from all three sc cases; our sc now defaults ObjectName to
+  LocalSystem for win32 services, matching sc.exe.
+
+Full client differential is **16/16 green** vs the VM (9 reg + 2 import + 2
+export + 3 sc). The corpus now carries no client-differential workarounds.
+
 ## Client-differential phase 3b: reg export (issue #68)
 
 `reg export` differential. The seed is populated once via our `reg import` (so
@@ -43,7 +58,7 @@ logical content: `{ key -> sorted name=data lines }`, compared per key.
 - `tests/client/reg_export.yaml`: 2 cases (basic = SZ/DWORD/QWORD/40-byte BINARY
   that triggers reg.exe wrapping/default/nested; multi_expand = REG_MULTI_SZ
   `hex(7)` and REG_EXPAND_SZ `hex(2)`).
-- Full client differential is **15/15 green** vs the VM (8 reg + 2 import + 2
+- Full client differential is **16/16 green** vs the VM (9 reg + 2 import + 2
   export + 3 sc). Phase 3 (import + export) is complete; phase 4 is fuzz.
 
 ## Client-differential phase 3a: reg import (issue #68)
@@ -66,9 +81,7 @@ to CRLF.
   is purely additive on top of phase 2.
 
 Compared with `SemanticOptions { ignore_timestamps, ignore_security }` (reg edits
-no ACLs). Export-and-diff is now phase 3b (above). Separately, the sc corpus still
-carries the `obj= LocalSystem` workaround until clients #78 merges (tracked
-there, not here).
+no ACLs). Export-and-diff is now phase 3b (above).
 
 ## Client-differential phase 2: sc (issue #68)
 
@@ -86,9 +99,10 @@ ignored).
 - `tests/client/sc.yaml`: 3 cases (create own, create share+auto, create+config).
   Full client differential is **11/11 green** vs the VM (8 reg + 3 sc).
 
-Finding filed for the clients agent: a bare `sc create` defaults `ObjectName` to
-`LocalSystem` in sc.exe but our `sc` omits it; the cases set `obj= LocalSystem`
-explicitly to stay green until that is resolved.
+Finding filed for the clients agent (now fixed, #78): a bare `sc create` defaults
+`ObjectName` to `LocalSystem` in sc.exe but our `sc` omitted it. As of commit
+e811b26 our sc matches, and the cases no longer set `obj= LocalSystem` (see the
+top section).
 
 ## Client-differential mode, phase 1 (issue #68)
 
