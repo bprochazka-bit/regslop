@@ -51,6 +51,12 @@ struct ClientTest {
     /// the subtree and the `.reg` texts are compared, normalized.
     #[serde(default)]
     export: Option<String>,
+    /// For reg_save tests: the subkey to save, relative to the hive root (e.g.
+    /// `Software\Exp`). The seed is populated via `reg import`, then both tools
+    /// `reg save` the subtree to a hive file and the two saved hives are compared
+    /// canonically (the saved file's root is the saved key).
+    #[serde(default)]
+    save: Option<String>,
     /// Shared command tails. For reg: `add Software\Foo /v ...` (the key is
     /// relative to the hive root; the runner prefixes `HKLM\` for our tool and
     /// `HKLM\HarnessTmp\` for the loaded Windows hive). For sc the same string
@@ -98,6 +104,10 @@ pub fn run(
             "reg_export" => match reg_bin {
                 Some(bin) => run_reg_export_case(vm_host, bin, &test),
                 None => fail("reg_export test but no --reg-bin given".to_string()),
+            },
+            "reg_save" => match reg_bin {
+                Some(bin) => run_reg_save_case(agent, vm_host, bin, &test),
+                None => fail("reg_save test but no --reg-bin given".to_string()),
             },
             _ => match reg_bin {
                 Some(bin) => run_case(agent, vm_host, bin, &test),
@@ -535,6 +545,87 @@ fn diff_reg(
     diffs
 }
 
+/// A `reg save` case. The seed is populated once via our `reg import` (so both
+/// sides save the identical input hive), then both tools `reg save` the subtree
+/// to a fresh hive file and the two saved hives are compared canonically. The
+/// saved file's root is the saved key, so this checks that our `reg save` and
+/// `reg.exe save` agree on the root key's own values and class, not just its
+/// descendants.
+fn run_reg_save_case(agent: &Client, vm_host: &str, reg_bin: &Path, test: &ClientTest) -> CaseResult {
+    let fail = |detail: String| CaseResult { name: test.name.clone(), passed: false, detail };
+    let (Some(content), Some(subkey)) = (&test.reg, &test.save) else {
+        return fail("reg_save test needs `reg` (seed body) and `save` (subkey)".to_string());
+    };
+    let safe = sanitize(&test.name);
+    let pop_reg = format!("/tmp/client_{safe}_pop.reg");
+    let pop_hive = format!("/tmp/client_{safe}_pop.hiv");
+    let l_out = format!("/tmp/client_{safe}_lin.hiv");
+    let w_out = format!("/tmp/client_{safe}_win.hiv");
+    let remote_hive = format!("sav_{safe}.hiv");
+    let remote_out = format!("sav_{safe}_out.hiv");
+
+    // 1. Populate the seed once with our reg import (validated equal to reg.exe).
+    let seed_body = content.replace("{ROOT}", "HKEY_LOCAL_MACHINE").replace('\n', "\r\n");
+    if std::fs::write(&pop_reg, seed_body).is_err() || std::fs::copy(SEED, &pop_hive).is_err() {
+        return fail("writing seed .reg / copying seed".to_string());
+    }
+    match Command::new(reg_bin).args(["import", &pop_reg, "--hive", &pop_hive]).output() {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => return fail(format!("seed import exit {:?}: {}", o.status.code(), String::from_utf8_lossy(&o.stderr).trim())),
+        Err(e) => return fail(format!("running our reg import: {e}")),
+    }
+
+    // 2. Our reg saves the subtree to a fresh hive.
+    let l_key = format!("HKEY_LOCAL_MACHINE\\{subkey}");
+    match Command::new(reg_bin).args(["save", &l_key, &l_out, "--hive", &pop_hive]).output() {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => return fail(format!("our reg save exit {:?}: {}", o.status.code(), String::from_utf8_lossy(&o.stderr).trim())),
+        Err(e) => return fail(format!("running our reg save: {e}")),
+    }
+
+    // 3. reg.exe saves the same subtree from the loaded hive (/y suppresses the
+    //    overwrite prompt; the saved file lands on the share and is pulled).
+    if let Err(e) = smb_put(vm_host, &pop_hive, &remote_hive) {
+        return fail(format!("smb push hive: {e}"));
+    }
+    let _ = smb_del(vm_host, &remote_out);
+    let w_key = format!("HKEY_LOCAL_MACHINE\\HarnessTmp\\{subkey}");
+    let chain = format!(
+        "reg unload {MOUNT} >nul 2>nul & reg load {MOUNT} {WIN_SHARE_DIR}\\{remote_hive} \
+         && reg save {w_key} {WIN_SHARE_DIR}\\{remote_out} /y & reg unload {MOUNT}"
+    );
+    if let Err(e) = vm_exec(vm_host, &format!("cmd.exe /c \"{chain}\"")) {
+        return fail(format!("vm exec: {e}"));
+    }
+    if let Err(e) = smb_get(vm_host, &remote_out, &w_out) {
+        return fail(format!("smb pull saved hive: {e}"));
+    }
+    let _ = smb_del(vm_host, &remote_hive);
+    let _ = smb_del(vm_host, &remote_out);
+
+    // 4. Canonicalize both saved hives and compare.
+    let a = match canonicalize(agent, &l_out) {
+        Ok(v) => v,
+        Err(e) => return fail(format!("canonicalize linux saved hive: {e}")),
+    };
+    let b = match canonicalize(agent, &w_out) {
+        Ok(v) => v,
+        Err(e) => return fail(format!("canonicalize windows saved hive: {e}")),
+    };
+    for f in [&pop_reg, &pop_hive, &l_out, &w_out] {
+        let _ = std::fs::remove_file(f);
+    }
+
+    let opts = SemanticOptions { ignore_timestamps: true, ignore_security: true };
+    let diffs = semantic::compare(&a, &b, &opts).diffs;
+    if diffs.is_empty() {
+        CaseResult { name: test.name.clone(), passed: true, detail: String::new() }
+    } else {
+        let summary: Vec<String> = diffs.iter().take(6).map(|d| format!("{}: {}", d.path, d.detail)).collect();
+        fail(summary.join(" | "))
+    }
+}
+
 // --- fuzz: generated reg operation sequences ---
 
 /// Run `count` fuzzed `reg` operation sequences through the client differential.
@@ -565,6 +656,7 @@ pub fn run_fuzz(
             service: None,
             reg: None,
             export: None,
+            save: None,
             ops: ops.clone(),
         };
         let mut r = run_case(agent, vm_host, reg_bin, &test);

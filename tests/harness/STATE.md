@@ -2,7 +2,7 @@
 
 Last updated: 2026-06-02
 
-## Client-differential mode (issue #68): all four phases done, green
+## Client-differential mode (issue #68): complete, green; #68 closed
 
 The proposal phasing (`clients/proposals/harness-client-differential.md`) is
 complete and green vs the live VM:
@@ -12,20 +12,23 @@ complete and green vs the live VM:
 - Phase 2: `sc create` / `config` (offline SYSTEM hive vs live sc.exe + reg save).
 - Phase 3: `.reg` import (3a) and export-and-diff (3b).
 - Phase 4: a seeded `reg` operation fuzzer (`fuzz` tag).
+- Plus `reg save` (#89): saved-hive differential.
 
-Latest full run: authored corpus **17/17** (`semantic`) + fuzz **12/12** over 264
-ops (`fuzz`), no failures. Three client divergences the differential surfaced were
-filed, fixed by the clients agent, and are now guarded: #71 (bare add, new key),
-#78 (sc ObjectName default), #84 (bare add, existing key). No corpus workarounds
-remain.
+Plus the `reg save` differential (issue #89, the edge case carried over from #68):
+`kind: reg_save` populates a seed via `reg import`, both tools `reg save` the
+subtree to a hive file, and the two saved hives are compared canonically (the
+saved file's root is the saved key, so the root key's own values/class are
+checked, not just descendants). Cases in `tests/client/reg_save.yaml`.
 
-**Remaining (optional, not blocking):** a `reg save` differential case, listed
-under the issue's own "edge cases" (our `reg save` writes a fresh hive rooted at
-the saved key while `reg.exe` snapshots the on-disk subtree, so the result hive
-must be defined identically on both sides). This is harness-side work (mine) if we
-want it before closing #68; nothing is blocked on another agent. Separately, the
-`tests/fuzz/` subtree (the fuzzer agent) is still just a CLAUDE doc; `run_fuzz` /
-`run_case` is the stable integration point if they later wire in their generator.
+Latest full run: authored corpus **19/19** (`semantic`, incl. 2 save) + fuzz
+**8/8** (`fuzz`), no failures. Three client divergences the differential surfaced
+were filed, fixed by the clients agent, and are now guarded: #71 (bare add, new
+key), #78 (sc ObjectName default), #84 (bare add, existing key). No corpus
+workarounds remain. #68 is closed.
+
+The `tests/fuzz/` subtree (the fuzzer agent) is still just a CLAUDE doc; `run_fuzz`
+/ `run_case` is the stable integration point if they later wire in their
+generator.
 
 ## Recovery tag: driven, no longer n/a (ADR 0004 / issue #61)
 
