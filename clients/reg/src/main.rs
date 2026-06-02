@@ -260,19 +260,14 @@ fn cmd_add(args: &[String]) -> CliResult<()> {
     let mut session = Session::open_or_create(&file)?;
     let force = flags.has("f");
 
-    let existed = session.exists(&in_hive)?;
     session.hive_mut().create_key(&in_hive)?;
 
-    // reg.exe operates on a value whenever one is named (/v), the default is
-    // named (/ve), or value details are given (/t, /d). A bare add of a *new*
-    // key also sets the default value to an empty REG_SZ: reg.exe leaves an
-    // empty (Default) on a freshly created key, so we match it (the harness
-    // client-differential flagged us for creating the key with no value). An
-    // existing key is left as-is by a bare add, so "ensure a key exists" does
-    // not clobber its default.
+    // reg.exe operates on a named value whenever one is given (/v), the default
+    // is named (/ve), or value details are present (/t, /d). A bare add (none of
+    // those) instead stamps an empty default REG_SZ on the key.
     let explicit_value = flags.has("v") || flags.has("ve") || flags.has("t") || flags.has("d");
-    if explicit_value || !existed {
-        // /v gives the value name; /ve and a bare add both target the default.
+    if explicit_value {
+        // /v gives the value name; /ve targets the default.
         let name = flags.get("v").unwrap_or("").to_string();
         let ty = match flags.get("t") {
             Some(t) => value::type_from_name(t)
@@ -291,6 +286,13 @@ fn cmd_add(args: &[String]) -> CliResult<()> {
         let sep = flags.get("s").unwrap_or("\\0");
         let data = value::encode_cli(ty, flags.get("d").unwrap_or(""), sep)?;
         session.hive_mut().set_value(&in_hive, &name, ty, &data)?;
+    } else if session.hive().get_value(&in_hive, "")?.is_none() {
+        // Bare add: reg.exe leaves an empty (Default) REG_SZ, both on a freshly
+        // created key (#71) and on an existing key that has no default yet (#84).
+        // We stamp it only when the default is absent, so a bare add stays
+        // idempotent and never clobbers an existing default value.
+        let data = value::encode_cli(value::REG_SZ, "", "\\0")?;
+        session.hive_mut().set_value(&in_hive, "", value::REG_SZ, &data)?;
     }
 
     session.save()?;
