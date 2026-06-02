@@ -26,6 +26,26 @@ Depends on the agent PR (`/test/crash_save` + log-backed save/load); built and
 verified together. Once both land, the spec agent can add `/test/crash_save` to
 CONTRACTS (MINOR, Linux-only) per ADR 0004.
 
+## Client-differential phase 3b: reg export (issue #68)
+
+`reg export` differential. The seed is populated once via our `reg import` (so
+both sides export the identical input hive), then both tools export the subtree
+to a `.reg` file and the texts are compared. Both emit UTF-16LE+BOM/CRLF, but the
+legitimate formatting differences are normalized away: the per-side root prefix
+(`HKEY_LOCAL_MACHINE\` vs `...\HarnessTmp\`), value/key ordering (our reg sorts,
+reg.exe preserves import order), and the `\`-continuation wrapping reg.exe
+applies to long hex values (ours emits them on one line). What remains is the
+logical content: `{ key -> sorted name=data lines }`, compared per key.
+
+- `client_differ.rs` gains a `kind: reg_export` path (`run_reg_export_case`) plus
+  a small self-contained `.reg` normalizer (`decode_reg`, `canonical_reg`,
+  `diff_reg`); `ClientTest` gains an `export` field (the subkey to export).
+- `tests/client/reg_export.yaml`: 2 cases (basic = SZ/DWORD/QWORD/40-byte BINARY
+  that triggers reg.exe wrapping/default/nested; multi_expand = REG_MULTI_SZ
+  `hex(7)` and REG_EXPAND_SZ `hex(2)`).
+- Full client differential is **15/15 green** vs the VM (8 reg + 2 import + 2
+  export + 3 sc). Phase 3 (import + export) is complete; phase 4 is fuzz.
+
 ## Client-differential phase 3a: reg import (issue #68)
 
 `.reg` import differential: both tools import the same `.reg` body into an equal
@@ -46,9 +66,9 @@ to CRLF.
   is purely additive on top of phase 2.
 
 Compared with `SemanticOptions { ignore_timestamps, ignore_security }` (reg edits
-no ACLs). Remaining phase-3 sub-piece: export-and-diff (`reg export` both sides,
-compare the `.reg` text). Separately, the sc corpus still carries the
-`obj= LocalSystem` workaround until clients #78 merges (tracked there, not here).
+no ACLs). Export-and-diff is now phase 3b (above). Separately, the sc corpus still
+carries the `obj= LocalSystem` workaround until clients #78 merges (tracked
+there, not here).
 
 ## Client-differential phase 2: sc (issue #68)
 

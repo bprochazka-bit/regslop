@@ -45,6 +45,12 @@ struct ClientTest {
     /// the loaded Windows hive.
     #[serde(default)]
     reg: Option<String>,
+    /// For reg_export tests: the subkey to export, relative to the hive root
+    /// (e.g. `Software\Exp`). The seed is first populated via `reg` (using our
+    /// `reg import`, validated equal to `reg.exe import`), then both tools export
+    /// the subtree and the `.reg` texts are compared, normalized.
+    #[serde(default)]
+    export: Option<String>,
     /// Shared command tails. For reg: `add Software\Foo /v ...` (the key is
     /// relative to the hive root; the runner prefixes `HKLM\` for our tool and
     /// `HKLM\HarnessTmp\` for the loaded Windows hive). For sc the same string
@@ -88,6 +94,10 @@ pub fn run(
             "reg_import" => match reg_bin {
                 Some(bin) => run_reg_import_case(agent, vm_host, bin, &test),
                 None => fail("reg_import test but no --reg-bin given".to_string()),
+            },
+            "reg_export" => match reg_bin {
+                Some(bin) => run_reg_export_case(vm_host, bin, &test),
+                None => fail("reg_export test but no --reg-bin given".to_string()),
             },
             _ => match reg_bin {
                 Some(bin) => run_case(agent, vm_host, bin, &test),
@@ -359,6 +369,170 @@ fn run_reg_import_case(agent: &Client, vm_host: &str, reg_bin: &Path, test: &Cli
         let summary: Vec<String> = diffs.iter().take(6).map(|d| format!("{}: {}", d.path, d.detail)).collect();
         fail(summary.join(" | "))
     }
+}
+
+/// A `reg export` case. The seed is populated once via our `reg import` (so both
+/// sides get the identical input hive), then both tools export the subtree to a
+/// `.reg` file and the texts are compared after normalizing away the legitimate
+/// formatting differences (per-side root prefix, value/key ordering, and the
+/// `\`-continuation line wrapping reg.exe applies to long hex values).
+fn run_reg_export_case(vm_host: &str, reg_bin: &Path, test: &ClientTest) -> CaseResult {
+    let fail = |detail: String| CaseResult { name: test.name.clone(), passed: false, detail };
+    let (Some(content), Some(subkey)) = (&test.reg, &test.export) else {
+        return fail("reg_export test needs `reg` (seed body) and `export` (subkey)".to_string());
+    };
+    let safe = sanitize(&test.name);
+    let pop_reg = format!("/tmp/client_{safe}_pop.reg");
+    let pop_hive = format!("/tmp/client_{safe}_pop.hiv");
+    let l_out = format!("/tmp/client_{safe}_lin.reg");
+    let w_out = format!("/tmp/client_{safe}_win.reg");
+    let remote_hive = format!("exp_{safe}.hiv");
+    let remote_reg = format!("exp_{safe}.reg");
+
+    // 1. Populate the seed once with our reg import (validated equal to reg.exe).
+    let seed_body = content.replace("{ROOT}", "HKEY_LOCAL_MACHINE").replace('\n', "\r\n");
+    if std::fs::write(&pop_reg, seed_body).is_err() || std::fs::copy(SEED, &pop_hive).is_err() {
+        return fail("writing seed .reg / copying seed".to_string());
+    }
+    match Command::new(reg_bin).args(["import", &pop_reg, "--hive", &pop_hive]).output() {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => return fail(format!("seed import exit {:?}: {}", o.status.code(), String::from_utf8_lossy(&o.stderr).trim())),
+        Err(e) => return fail(format!("running our reg import: {e}")),
+    }
+
+    // 2. Our reg exports the subtree.
+    let l_key = format!("HKEY_LOCAL_MACHINE\\{subkey}");
+    match Command::new(reg_bin).args(["export", &l_key, &l_out, "--hive", &pop_hive]).output() {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => return fail(format!("our reg export exit {:?}: {}", o.status.code(), String::from_utf8_lossy(&o.stderr).trim())),
+        Err(e) => return fail(format!("running our reg export: {e}")),
+    }
+
+    // 3. reg.exe exports the same subtree from the loaded hive.
+    if let Err(e) = smb_put(vm_host, &pop_hive, &remote_hive) {
+        return fail(format!("smb push hive: {e}"));
+    }
+    let w_key = format!("HKEY_LOCAL_MACHINE\\HarnessTmp\\{subkey}");
+    let chain = format!(
+        "reg unload {MOUNT} >nul 2>nul & reg load {MOUNT} {WIN_SHARE_DIR}\\{remote_hive} \
+         && reg export {w_key} {WIN_SHARE_DIR}\\{remote_reg} & reg unload {MOUNT}"
+    );
+    if let Err(e) = vm_exec(vm_host, &format!("cmd.exe /c \"{chain}\"")) {
+        return fail(format!("vm exec: {e}"));
+    }
+    if let Err(e) = smb_get(vm_host, &remote_reg, &w_out) {
+        return fail(format!("smb pull .reg: {e}"));
+    }
+    let _ = smb_del(vm_host, &remote_hive);
+    let _ = smb_del(vm_host, &remote_reg);
+
+    // 4. Normalize both .reg texts and compare.
+    let read_reg = |path: &str| std::fs::read(path).map_err(|e| format!("reading {path}: {e}")).map(|b| decode_reg(&b));
+    let a = match read_reg(&l_out) {
+        Ok(t) => canonical_reg(&t, "HKEY_LOCAL_MACHINE\\"),
+        Err(e) => return fail(e),
+    };
+    let b = match read_reg(&w_out) {
+        Ok(t) => canonical_reg(&t, "HKEY_LOCAL_MACHINE\\HarnessTmp\\"),
+        Err(e) => return fail(e),
+    };
+    for f in [&pop_reg, &pop_hive, &l_out, &w_out] {
+        let _ = std::fs::remove_file(f);
+    }
+
+    let diffs = diff_reg(&a, &b);
+    if diffs.is_empty() {
+        CaseResult { name: test.name.clone(), passed: true, detail: String::new() }
+    } else {
+        fail(diffs.into_iter().take(6).collect::<Vec<_>>().join(" | "))
+    }
+}
+
+/// Decode `.reg` bytes (UTF-16LE with BOM, as both reg.exe and our reg emit) to a
+/// UTF-8 string. Falls back to lossy UTF-8 if there is no UTF-16 BOM.
+fn decode_reg(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        let start = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) { 3 } else { 0 };
+        String::from_utf8_lossy(&bytes[start..]).into_owned()
+    }
+}
+
+/// Reduce a `.reg` document to `{ key (root stripped) -> sorted value lines }`,
+/// ignoring the header, blank lines, value/key ordering, and the `\`-continuation
+/// wrapping reg.exe applies to long hex values. What remains is the logical
+/// content: the keys present and each key's `name=data` lines.
+fn canonical_reg(text: &str, strip_root: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+    use std::collections::BTreeMap;
+    // Join continuation lines: a line ending in `\` continues on the next, whose
+    // leading whitespace reg.exe adds is dropped.
+    let mut joined: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        if let Some(prev) = joined.last_mut() {
+            if prev.ends_with('\\') {
+                prev.pop();
+                prev.push_str(line.trim_start());
+                continue;
+            }
+        }
+        joined.push(line.to_string());
+    }
+
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut cur: Option<String> = None;
+    for line in joined {
+        let t = line.trim_start_matches('\u{feff}');
+        if t.is_empty() || t.starts_with("Windows Registry Editor") || t.starts_with("REGEDIT4") {
+            continue;
+        }
+        if let Some(inner) = t.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            // Strip the export root (case-insensitively) so both sides share a key space.
+            let key = if inner.to_ascii_lowercase().starts_with(&strip_root.to_ascii_lowercase()) {
+                inner[strip_root.len()..].to_string()
+            } else {
+                inner.to_string()
+            };
+            cur = Some(key.clone());
+            out.entry(key).or_default();
+        } else if let Some(k) = &cur {
+            out.get_mut(k).unwrap().push(t.to_string());
+        }
+    }
+    for v in out.values_mut() {
+        v.sort();
+    }
+    out
+}
+
+/// Compare two normalized `.reg` maps; return human-readable divergences.
+fn diff_reg(
+    a: &std::collections::BTreeMap<String, Vec<String>>,
+    b: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Vec<String> {
+    let mut diffs = Vec::new();
+    for key in a.keys().chain(b.keys()).collect::<std::collections::BTreeSet<_>>() {
+        match (a.get(key), b.get(key)) {
+            (Some(_), None) => diffs.push(format!("[{key}] only in our export")),
+            (None, Some(_)) => diffs.push(format!("[{key}] only in reg.exe export")),
+            (Some(va), Some(vb)) => {
+                for line in va {
+                    if !vb.contains(line) {
+                        diffs.push(format!("[{key}] our-only value: {line}"));
+                    }
+                }
+                for line in vb {
+                    if !va.contains(line) {
+                        diffs.push(format!("[{key}] reg.exe-only value: {line}"));
+                    }
+                }
+            }
+            (None, None) => {}
+        }
+    }
+    diffs
 }
 
 // --- helpers ---

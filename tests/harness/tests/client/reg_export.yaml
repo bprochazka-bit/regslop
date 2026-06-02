@@ -1,0 +1,28 @@
+# reg export differential: the seed is populated once via our `reg import`, then
+# both tools export the subtree to a .reg file; the texts are compared after
+# normalizing the per-side root, value/key ordering, and reg.exe's line wrapping.
+name: export_basic
+kind: reg_export
+export: Software\Exp
+reg: |
+  Windows Registry Editor Version 5.00
+
+  [{ROOT}\Software\Exp]
+  "Str"="hello world"
+  "Dw"=dword:0000002a
+  "Qw"=hex(b):00,00,00,00,01,00,00,00
+  "Bin"=hex:01,02,03,04,05,06,07,08,09,0a,0b,0c,0d,0e,0f,10,11,12,13,14,15,16,17,18,19,1a,1b,1c,1d,1e,1f,20,21,22,23,24,25,26,27
+  @="theDefault"
+
+  [{ROOT}\Software\Exp\Sub]
+  "N"="nested"
+---
+name: export_multi_expand
+kind: reg_export
+export: Software\Types
+reg: |
+  Windows Registry Editor Version 5.00
+
+  [{ROOT}\Software\Types]
+  "Multi"=hex(7):61,00,6c,00,70,00,68,00,61,00,00,00,62,00,65,00,74,00,61,00,00,00,00,00
+  "Expand"=hex(2):25,00,54,00,4d,00,50,00,25,00,5c,00,62,00,69,00,6e,00,00,00
