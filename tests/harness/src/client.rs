@@ -23,6 +23,14 @@ pub struct Client {
     hive_dir: String,
     /// Whether this agent uses Windows-style paths (backslash separator).
     windows_style: bool,
+    /// This agent's port, used to disambiguate hive filenames. Two agents that
+    /// share a hive dir (e.g. the libreg agent and a `--backend mem` stand-in,
+    /// both reporting `agent=linux`, both under `/tmp`) would otherwise map the
+    /// same logical hive to the same file and overwrite each other (issue #94).
+    /// The harness assigns the two agents distinct ports, so a per-port filename
+    /// prefix deconflicts them without needing a per-agent subdirectory (which
+    /// would require a remote `mkdir` on the Windows side).
+    port: u16,
     /// Host to pull this agent's saved hive files from over SMB, for byte-level
     /// structural validation. Set only for the Windows agent when `--windows-smb`
     /// is on; `None` means no SMB byte-pull.
@@ -60,6 +68,7 @@ impl Client {
             hive_dir: "/tmp".to_string(),
             windows_style: false,
             smb_host: None,
+            port,
         }
     }
 
@@ -82,16 +91,19 @@ impl Client {
     }
 
     /// Map a logical hive path from a test into a path valid on this agent's
-    /// filesystem: keep the basename, place it under the agent's hive dir, using
-    /// the agent's path separator. The mapping is deterministic, so a later
-    /// `hive_load` of the same logical path resolves to the same file.
+    /// filesystem: keep the basename (prefixed with this agent's port so two
+    /// agents sharing a hive dir do not collide, issue #94), place it under the
+    /// agent's hive dir, using the agent's path separator. The mapping is
+    /// deterministic, so a later `hive_load` of the same logical path resolves to
+    /// the same file on this agent.
     pub fn map_hive_path(&self, logical: &str) -> String {
         let base = logical.rsplit(['/', '\\']).next().unwrap_or(logical);
         let dir = self.hive_dir.trim_end_matches(['/', '\\']);
+        let name = format!("{}-{base}", self.port);
         if self.windows_style {
-            format!("{dir}\\{base}")
+            format!("{dir}\\{name}")
         } else {
-            format!("{dir}/{base}")
+            format!("{dir}/{name}")
         }
     }
 
