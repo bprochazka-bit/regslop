@@ -1,6 +1,23 @@
 # Harness: STATE
 
-Last updated: 2026-06-02
+Last updated: 2026-06-03
+
+## Per-agent hive paths: unblock two-Linux-agent fuzzing (issue #94)
+
+The fuzzer agent pairs the libreg agent with a `--backend mem` stand-in for local
+semantic/bytewise differential fuzzing, but both report `agent=linux` and so were
+mapped to the same hive dir (`/tmp`) with the same basenames: the two agents saved
+to the same file and overwrote each other, corrupting roundtrip/bytewise/semantic.
+
+Fix in `client.rs`: `Client` now carries its `port`, and `map_hive_path` prefixes
+the basename with it (`/tmp/7878-x.hiv` vs `/tmp/7879-x.hiv`). The harness assigns
+the two agents distinct ports, so this deconflicts them with no per-agent
+subdirectory (which would need a remote `mkdir` on the Windows side) and stays
+consistent for the SMB byte-pull (which derives its name from the mapped path).
+Verified: two local libreg agents (7878 + 7879) under `/tmp` run the full agent
+differential GREEN (semantic 17/17, structural 10/10, bytewise 2/2 over 14+14
+distinct hives, roundtrip 8/8, 0 warnings). The secondary `.LOG1/.LOG2` companion
+sweep noted in #94 is left to the fuzzer (which already sweeps) / the spec agent.
 
 ## Client-differential mode (issue #68): complete, green; #68 closed
 
