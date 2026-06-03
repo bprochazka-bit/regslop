@@ -4,7 +4,7 @@ This file is the single source of truth for interfaces between components.
 All agents read this file. Only the spec agent writes to it.
 Changes require a PR labeled `contracts` and a version bump.
 
-**Current version: 0.1.8**
+**Current version: 0.1.9**
 
 ## Versioning
 
@@ -311,6 +311,23 @@ For v1.5 hives (Windows 8.1+), libreg writes dual logs:
 - On crash recovery, both logs are inspected and the most recent
   consistent set is applied
 
+A load triggers recovery only when the primary is dirty (its primary
+sequence != secondary sequence, invariant 2), missing, or fails its
+checksum. When the primary is present and clean, it is authoritative: the
+loader MUST return it and MUST NOT replay a log over it, even if a log file
+at that path carries a higher sequence number. A log only ever advances a
+load past a primary that is itself awaiting recovery; it never overrides a
+clean primary. (Otherwise a stale `.LOG1`/`.LOG2` left at a path by an
+earlier, unrelated hive would silently mutate a freshly saved clean hive on
+the next load.)
+
+It follows that a clean `hive_save` MUST NOT leave behind log companions that
+a later load would replay over the saved primary: a clean save either writes
+no logs, or writes logs whose recovery sequence does not exceed the primary's
+(so the primary still wins). Reusing a hive path is therefore safe across
+saves without the caller having to sweep `.LOG*` files by hand. This is a
+libreg log-layer obligation, not a wire change.
+
 Agents must save with logs by default. The harness simulates crashes
 between log write and primary write via the `POST /test/crash_save`
 test-mode endpoint (see "Test-mode endpoints"), which the Linux agent
@@ -365,6 +382,12 @@ is distinct from `TYPE_MISMATCH`: the latter applies when a well-formed
 
 ## Change Log
 
+- 0.1.9 (patch): clarify log recovery precedence (issue #93). A clean primary
+  (primary seq == secondary seq) is authoritative; a load MUST NOT replay a
+  log over it, and a clean `hive_save` MUST NOT leave log companions that a
+  later load would replay over the saved primary. Pins intended behavior so a
+  stale `.LOG` from a prior hive at a reused path cannot mutate a freshly
+  saved one. libreg log-layer fix; no wire change.
 - 0.1.8 (minor): add the `POST /test/crash_save` test-mode endpoint (Linux
   agent only; Windows does not implement it) that drives the `recovery` tag,
   now that the implementation has landed (libreg log recovery, the agent
