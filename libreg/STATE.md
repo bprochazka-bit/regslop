@@ -2,11 +2,38 @@
 
 Last updated: 2026-05-31 (library agent)
 
-Merge state: ALL 11 STEPS are on main (steps 1-10 + offreg-alignment + security
-get/set + load robustness + panic-safety + step 11 recovery #66), and the
-harness reports libreg-vs-offreg GREEN (16/16 semantic, 9/9 structural, 8/8
-roundtrip). `recovery` (step 11) is libreg-internal and waits on the agent
-wiring `/test/crash_save` to drive the prototype (issue #61).
+Merge state: ALL 11 steps on main; every differential axis GREEN, including
+recovery 3/3 (the linux agent wired `/test/crash_save` and the harness drives
+it, #73/#74; `/test/crash_save` is in CONTRACTS 0.1.8). The library is
+feature-complete.
+
+THIS session (branch `agent/library-recovery-precedence` off main): a recovery
+CORRECTNESS fix the operation fuzzer surfaced (issue #93, ratified in CONTRACTS
+0.1.9 "Transaction Log Behavior"). My recover() did naive
+highest-generation-wins, so a stale `.LOG` left at a reused path (from an
+earlier, unrelated hive at a higher sequence) was replayed OVER a freshly saved
+clean primary, silently mutating it. CONTRACTS 0.1.9 ratifies: a present, clean
+primary is AUTHORITATIVE; a log is replayed only when the primary is dirty,
+missing, or corrupt.
+- Fix: pre-primary crash points now write a DIRTY primary (primary_seq = new,
+  secondary_seq = prev) via the new `Hive::snapshot_with_seqs`, so a real
+  interrupted save triggers replay; a clean save writes a clean primary that
+  wins on load. `recover()` returns a present+clean+valid primary outright and
+  only replays a log when the primary is dirty/missing/corrupt. For a DIRTY
+  primary it caps replay at the in-flight generation (primary_seq): a stale log
+  ABOVE it (left in the slot the crash did not overwrite, from a prior hive) is
+  ignored, replaying the in-flight or last-committed log instead.
+- This corrects the #66 simplification (I had skipped the dirty primary and
+  relied on highest-gen-wins, which #93 showed is wrong).
+- Tests: the issue-#93 case (clean primary + stale gen-50 log -> loads the
+  fresh primary), the dirty-primary-replays case, the dirty+stale-above-inflight
+  case, all three crash points still recover baseline+M, torn-log, alternation.
+  136 lib green; the `crash_recovery` example still recovers baseline+M. The
+  agent's adopted API (crash_save_plan -> Vec<(Slot,bytes)>,
+  recover(primary,log1,log2)) is
+  UNCHANGED; only the bytes/precedence are corrected.
+
+----- recovery prototype (#66) + same-handle gen fix (#69) + example (#70) -----
 
 THIS session (branch `agent/library-recovery-genfix` off main): a CORRECTNESS
 FIX to the recovery prototype merged in #66. Re-reading issue #61, the harness

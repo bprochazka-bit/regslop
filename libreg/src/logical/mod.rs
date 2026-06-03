@@ -123,20 +123,27 @@ impl Hive {
         self.generation = generation;
     }
 
-    /// A complete hive file for this in-memory state stamped at sequence
-    /// `generation` (a clean snapshot: primary == secondary == generation,
-    /// checksum recomputed). Used for both the committed primary and the log
-    /// journal of a recoverable save (see [`crate::log`]).
-    pub fn snapshot(&self, generation: u32) -> Vec<u8> {
+    /// A complete hive file for this in-memory state with the given sequence
+    /// numbers (checksum recomputed). When `primary_seq == secondary_seq` the
+    /// snapshot is clean (a committed primary or a log journal); when they
+    /// differ it is dirty, which signals an in-flight save and triggers
+    /// recovery on the next load (see [`crate::log`]).
+    pub fn snapshot_with_seqs(&self, primary_seq: u32, secondary_seq: u32) -> Vec<u8> {
         let mut bb = BaseBlock::create(self.root_offset, self.image.bins_size(), self.last_written);
-        bb.primary_seq = generation;
-        bb.secondary_seq = generation;
+        bb.primary_seq = primary_seq;
+        bb.secondary_seq = secondary_seq;
         bb.recompute_checksum();
 
         let mut file = Vec::with_capacity(BASE_BLOCK_SIZE + self.image.bins().len());
         file.extend_from_slice(&bb.to_bytes());
         file.extend_from_slice(self.image.bins());
         file
+    }
+
+    /// A clean snapshot at `generation` (primary == secondary == generation).
+    /// Used for a committed primary and a log journal.
+    pub fn snapshot(&self, generation: u32) -> Vec<u8> {
+        self.snapshot_with_seqs(generation, generation)
     }
 
     /// Check the root offset frames a valid nk. Uses the bounds-safe cell
