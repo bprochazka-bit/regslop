@@ -112,16 +112,24 @@ pub fn recover(
     log1: Option<&[u8]>,
     log2: Option<&[u8]>,
 ) -> Result<Hive, LogicalError> {
-    // A clean, valid primary wins outright.
-    if let Some(bytes) = primary {
-        if let Ok(bb) = BaseBlock::parse(bytes) {
-            if bb.checksum_valid() && bb.is_clean() {
-                return Hive::from_file_bytes(bytes);
-            }
+    let primary_bb = primary.and_then(|p| BaseBlock::parse(p).ok());
+
+    // A clean, valid primary wins outright: no log is replayed over it.
+    if let Some(bb) = &primary_bb {
+        if bb.checksum_valid() && bb.is_clean() {
+            return Hive::from_file_bytes(primary.unwrap());
         }
     }
 
-    // Primary dirty/missing/corrupt: replay the newest valid log.
+    // The primary is dirty, missing, or corrupt. A dirty primary names its
+    // in-flight generation in `primary_seq`; any log ABOVE that is stale (left
+    // by a different hive at this path) and must not be replayed. With no valid
+    // primary base block there is no in-flight bound, so consider every log.
+    let cap = primary_bb
+        .as_ref()
+        .filter(|bb| bb.checksum_valid())
+        .map(|bb| bb.primary_seq);
+
     let mut best: Option<(u32, &[u8])> = None;
     for candidate in [log1, log2].into_iter().flatten() {
         let Ok(bb) = BaseBlock::parse(candidate) else {
@@ -131,15 +139,18 @@ pub fn recover(
             continue;
         }
         let generation = bb.secondary_seq;
+        if cap.is_some_and(|c| generation > c) {
+            continue; // stale: above the in-flight generation
+        }
         if best.is_none_or(|(g, _)| generation > g) {
             best = Some((generation, candidate));
         }
     }
 
     match (best, primary) {
-        // A log to replay.
+        // Replay the in-flight (or last-committed) log.
         (Some((_, bytes)), _) => Hive::from_file_bytes(bytes),
-        // No valid log, but a primary is present (dirty/corrupt): best effort.
+        // No replayable log; load the primary as-is (best effort) if present.
         (None, Some(bytes)) => Hive::from_file_bytes(bytes),
         (None, None) => Err(LogicalError::Unsupported(
             "no recoverable hive: no primary and no valid log",
@@ -305,5 +316,35 @@ mod tests {
         // the newer log is replayed, even though the primary is present.
         let recovered = run_recovery(CrashPoint::AfterLogBeforePrimary);
         assert_baseline_plus_m(&recovered);
+    }
+
+    #[test]
+    fn dirty_primary_ignores_a_stale_log_above_the_inflight_generation() {
+        // A real interrupted save at generation 3 (its journal is in log1). A
+        // stale log from a DIFFERENT hive at generation 9 sits in log2 (the slot
+        // this crash did not touch). recover must replay the in-flight gen-3
+        // journal, not the higher-numbered stale log.
+        let mut h = Hive::new_empty();
+        h.create_key("Baseline").unwrap();
+        h.set_generation(2); // last committed generation
+        h.create_key("Mutation").unwrap();
+        let dirty_primary = h.snapshot_with_seqs(3, 2); // in-flight 3, committed 2
+        let inflight_journal = h.snapshot(3);
+
+        let mut stale = Hive::new_empty();
+        stale.create_key("StaleOther").unwrap();
+        let stale_log = stale.snapshot(9);
+
+        let recovered = recover(
+            Some(&dirty_primary),
+            Some(&inflight_journal),
+            Some(&stale_log),
+        )
+        .unwrap();
+        assert_eq!(
+            recovered.subkeys("").unwrap(),
+            vec!["Baseline", "Mutation"],
+            "replayed the in-flight gen-3 journal, not the stale gen-9 log"
+        );
     }
 }

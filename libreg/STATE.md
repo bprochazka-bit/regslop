@@ -19,14 +19,18 @@ missing, or corrupt.
   secondary_seq = prev) via the new `Hive::snapshot_with_seqs`, so a real
   interrupted save triggers replay; a clean save writes a clean primary that
   wins on load. `recover()` returns a present+clean+valid primary outright and
-  only replays a log when the primary is dirty/missing/corrupt.
+  only replays a log when the primary is dirty/missing/corrupt. For a DIRTY
+  primary it caps replay at the in-flight generation (primary_seq): a stale log
+  ABOVE it (left in the slot the crash did not overwrite, from a prior hive) is
+  ignored, replaying the in-flight or last-committed log instead.
 - This corrects the #66 simplification (I had skipped the dirty primary and
   relied on highest-gen-wins, which #93 showed is wrong).
 - Tests: the issue-#93 case (clean primary + stale gen-50 log -> loads the
-  fresh primary), the dirty-primary-does-replay flip side, all three crash
-  points still recover baseline+M, torn-log, alternation. 135 lib green; the
-  `crash_recovery` example still recovers baseline+M. The agent's adopted API
-  (crash_save_plan -> Vec<(Slot,bytes)>, recover(primary,log1,log2)) is
+  fresh primary), the dirty-primary-replays case, the dirty+stale-above-inflight
+  case, all three crash points still recover baseline+M, torn-log, alternation.
+  136 lib green; the `crash_recovery` example still recovers baseline+M. The
+  agent's adopted API (crash_save_plan -> Vec<(Slot,bytes)>,
+  recover(primary,log1,log2)) is
   UNCHANGED; only the bytes/precedence are corrected.
 
 ----- recovery prototype (#66) + same-handle gen fix (#69) + example (#70) -----
