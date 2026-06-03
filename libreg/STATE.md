@@ -393,12 +393,11 @@ verifiable offline; they do NOT yet decide which list type a create emits
 
 Tests (all 116 lib + corpus/integration green: base/hbin, offreg-compare,
 enumerate, promote-ri; `cargo test`, clippy clean; new files
-fmt clean. NOTE: pre-existing fmt drift exists in several `format/*.rs` and
-`tests/hbin_walk_corpus.rs` from earlier merges; left untouched per the
-"fmt what you touch" convention, so a repo-wide `cargo fmt --check` still
-reports diffs there. Worth a separate fmt-only cleanup PR. WATCH OUT:
-`rustfmt src/format/mod.rs` follows the `mod` declarations and reformats
-every `format/*.rs`; pass only the files you changed, or revert the rest.):
+fmt clean, and repo-wide `cargo fmt --check` is now CLEAN: the pre-existing
+drift in `format/*.rs` and `tests/hbin_walk_corpus.rs` was cleared in a
+dedicated fmt-only PR. (WATCH OUT for the future: `rustfmt src/format/mod.rs`
+follows the `mod` declarations and reformats every `format/*.rs`; when only
+touching one file, pass that file, not mod.rs.)):
 
 - `src/format/base_block.rs` unit tests: `parses_known_fields`,
   `round_trip_is_byte_exact`, `rejects_short_buffer`,
@@ -639,6 +638,5 @@ now strong (byte-identical empty-hive prefix and descriptor, matching tree).
    allocation order (lh before child nk), the non-ASCII lh hash (full Unicode
    upcase, issue #22). The `dump_hive`/`make_key_hive` examples make this easy
    to check against the references.
-5. A small fmt-only PR to clear the pre-existing `cargo fmt` drift in
-   `format/*.rs` and `tests/hbin_walk_corpus.rs` (left untouched here per
-   "fmt what you touch"), so repo-wide `cargo fmt --check` is clean.
+5. DONE: the fmt-only cleanup landed, so repo-wide `cargo fmt --check` is
+   clean. No standing housekeeping items remain.

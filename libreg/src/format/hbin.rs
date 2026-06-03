@@ -350,7 +350,9 @@ mod tests {
         // Corrupt the size to a non-multiple of 4096.
         bin[OFF_SIZE..OFF_SIZE + 4].copy_from_slice(&5000u32.to_le_bytes());
         match walk(&bin) {
-            Err(FormatError::Unaligned { structure, align, .. }) => {
+            Err(FormatError::Unaligned {
+                structure, align, ..
+            }) => {
                 assert_eq!(structure, "hbin");
                 assert_eq!(align, HBIN_ALIGN);
             }

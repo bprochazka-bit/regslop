@@ -194,7 +194,10 @@ mod tests {
         let buf = [b'l', b'f', 0];
         assert!(matches!(
             FastLeaf::parse(&buf),
-            Err(FormatError::OutOfBounds { structure: "lf header", .. })
+            Err(FormatError::OutOfBounds {
+                structure: "lf header",
+                ..
+            })
         ));
     }
 
@@ -204,7 +207,10 @@ mod tests {
         payload[0..2].copy_from_slice(b"lh");
         assert!(matches!(
             FastLeaf::parse(&payload),
-            Err(FormatError::BadSignature { structure: "lf", .. })
+            Err(FormatError::BadSignature {
+                structure: "lf",
+                ..
+            })
         ));
     }
 
@@ -215,7 +221,10 @@ mod tests {
         payload[OFF_COUNT..OFF_COUNT + 2].copy_from_slice(&99u16.to_le_bytes());
         assert!(matches!(
             FastLeaf::parse(&payload),
-            Err(FormatError::OutOfBounds { structure: "lf elements", .. })
+            Err(FormatError::OutOfBounds {
+                structure: "lf elements",
+                ..
+            })
         ));
     }
 

@@ -198,7 +198,10 @@ mod tests {
         payload[0..2].copy_from_slice(b"nk");
         assert!(matches!(
             SecurityCell::parse(&payload),
-            Err(FormatError::BadSignature { structure: "sk", .. })
+            Err(FormatError::BadSignature {
+                structure: "sk",
+                ..
+            })
         ));
     }
 
@@ -209,7 +212,10 @@ mod tests {
         payload[OFF_DESC_SIZE..OFF_DESC_SIZE + 4].copy_from_slice(&9999u32.to_le_bytes());
         assert!(matches!(
             SecurityCell::parse(&payload),
-            Err(FormatError::OutOfBounds { structure: "sk descriptor", .. })
+            Err(FormatError::OutOfBounds {
+                structure: "sk descriptor",
+                ..
+            })
         ));
     }
 }

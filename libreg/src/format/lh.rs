@@ -208,7 +208,10 @@ mod tests {
         payload[0..2].copy_from_slice(b"lf");
         assert!(matches!(
             HashLeaf::parse(&payload),
-            Err(FormatError::BadSignature { structure: "lh", .. })
+            Err(FormatError::BadSignature {
+                structure: "lh",
+                ..
+            })
         ));
     }
 
@@ -218,7 +221,10 @@ mod tests {
         payload[OFF_COUNT..OFF_COUNT + 2].copy_from_slice(&99u16.to_le_bytes());
         assert!(matches!(
             HashLeaf::parse(&payload),
-            Err(FormatError::OutOfBounds { structure: "lh elements", .. })
+            Err(FormatError::OutOfBounds {
+                structure: "lh elements",
+                ..
+            })
         ));
     }
 

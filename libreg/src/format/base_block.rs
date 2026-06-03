@@ -199,8 +199,7 @@ impl BaseBlock {
         buf[OFF_MINOR..OFF_MINOR + 4].copy_from_slice(&self.minor_version.to_le_bytes());
         buf[OFF_FILE_TYPE..OFF_FILE_TYPE + 4].copy_from_slice(&self.file_type.to_le_bytes());
         buf[OFF_FILE_FORMAT..OFF_FILE_FORMAT + 4].copy_from_slice(&self.file_format.to_le_bytes());
-        buf[OFF_ROOT_CELL..OFF_ROOT_CELL + 4]
-            .copy_from_slice(&self.root_cell_offset.to_le_bytes());
+        buf[OFF_ROOT_CELL..OFF_ROOT_CELL + 4].copy_from_slice(&self.root_cell_offset.to_le_bytes());
         buf[OFF_HBINS_SIZE..OFF_HBINS_SIZE + 4].copy_from_slice(&self.hbins_size.to_le_bytes());
         buf[OFF_CLUSTERING..OFF_CLUSTERING + 4]
             .copy_from_slice(&self.clustering_factor.to_le_bytes());
@@ -258,10 +257,16 @@ impl core::fmt::Debug for BaseBlock {
             )
             .field("file_type", &self.file_type)
             .field("file_format", &self.file_format)
-            .field("root_cell_offset", &format_args!("{:#x}", self.root_cell_offset))
+            .field(
+                "root_cell_offset",
+                &format_args!("{:#x}", self.root_cell_offset),
+            )
             .field("hbins_size", &self.hbins_size)
             .field("clustering_factor", &self.clustering_factor)
-            .field("stored_checksum", &format_args!("{:#010x}", self.stored_checksum))
+            .field(
+                "stored_checksum",
+                &format_args!("{:#010x}", self.stored_checksum),
+            )
             .finish_non_exhaustive()
     }
 }
