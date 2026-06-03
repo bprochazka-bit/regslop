@@ -33,7 +33,12 @@ struct RecoveryTest {
 }
 
 pub fn run(agent: &Client, tests_dir: &Path) -> Vec<TestResult> {
-    load_tests(tests_dir).iter().map(|t| run_case(agent, t)).collect()
+    let mut results: Vec<TestResult> =
+        load_tests(tests_dir).iter().map(|t| run_case(agent, t)).collect();
+    // A programmatic guard that needs a filesystem step (remove the primary,
+    // keep the logs) the YAML op model cannot express.
+    results.push(clean_primary_guard(agent));
+    results
 }
 
 fn run_case(agent: &Client, test: &RecoveryTest) -> TestResult {
@@ -138,6 +143,141 @@ fn run_case(agent: &Client, test: &RecoveryTest) -> TestResult {
 fn dump(agent: &Client, handle: &str) -> Result<Value, String> {
     let env = agent.call("GET", "/hive/dump", &json!({ "handle": handle }))?;
     env.data.get("canonical_json").cloned().ok_or_else(|| "dump missing canonical_json".to_string())
+}
+
+/// Guard for the CONTRACTS 0.1.9 invariant (issue #97, fixed by #96): a clean
+/// primary (primary seq == secondary seq) is authoritative on load, so a stale
+/// `.LOG1/.LOG2` left at the path MUST NOT be replayed over the freshly saved
+/// primary. We build a high-generation hive (five saves populate both logs),
+/// remove ONLY the primary, then write a fresh CLEAN primary at the same path and
+/// reload: the reload must equal the clean in-memory state, not the stale log
+/// generation. Single libreg agent; the in-memory backend has no logs, so it
+/// reports `Na`.
+fn clean_primary_guard(agent: &Client) -> TestResult {
+    let result = |outcome: AspectOutcome| TestResult {
+        name: "clean_primary_suppresses_stale_log".to_string(),
+        tags: vec!["recovery".to_string()],
+        problems: Vec::new(),
+        semantic: AspectOutcome::Na,
+        structural: AspectOutcome::Na,
+        bytewise: AspectOutcome::Na,
+        roundtrip: AspectOutcome::Na,
+        recovery: outcome,
+        fuzz: AspectOutcome::Na,
+        linux: empty_seq(),
+        windows: None,
+    };
+    let path = "/tmp/harness_clean_primary.hiv";
+    let sweep = || {
+        for ext in ["", ".LOG1", ".LOG2"] {
+            let _ = std::fs::remove_file(format!("{path}{ext}"));
+        }
+    };
+    sweep();
+
+    // Gen 1: five saves with distinct keys populate the dual logs.
+    let h1 = match create_hive(agent, path) {
+        Ok(h) => h,
+        Err(e) => return result(AspectOutcome::Fail(e)),
+    };
+    for i in 0..5 {
+        if let Err(e) = ok(agent, "POST", "/key/create", &json!({ "handle": h1, "path": format!("OLD{i}") })) {
+            return result(AspectOutcome::Fail(e));
+        }
+        if let Err(e) = ok(agent, "POST", "/hive/save", &json!({ "handle": h1 })) {
+            // No logs on the in-memory backend; skip rather than fail.
+            if e.contains("only the libreg backend") || e.contains("unsupported") {
+                return result(AspectOutcome::Na);
+            }
+            return result(AspectOutcome::Fail(e));
+        }
+    }
+    let _ = agent.call("POST", "/hive/close", &json!({ "handle": h1 }));
+
+    // Confirm gen 1 actually produced logs; otherwise the stale-log scenario is
+    // not exercised and a pass would be meaningless (report Na, not a false Pass).
+    let logs_present =
+        ["LOG1", "LOG2"].iter().any(|e| std::path::Path::new(&format!("{path}.{e}")).exists());
+    if !logs_present {
+        sweep();
+        return result(AspectOutcome::Na);
+    }
+
+    // Remove ONLY the primary; the stale .LOG1/.LOG2 remain at the path.
+    if let Err(e) = std::fs::remove_file(path) {
+        sweep();
+        return result(AspectOutcome::Fail(format!("removing primary: {e}")));
+    }
+
+    // Gen 2: a fresh hive, one key, one clean save => a clean primary.
+    let h2 = match create_hive(agent, path) {
+        Ok(h) => h,
+        Err(e) => {
+            sweep();
+            return result(AspectOutcome::Fail(e));
+        }
+    };
+    if let Err(e) = ok(agent, "POST", "/key/create", &json!({ "handle": h2, "path": "NEWONLY" })) {
+        sweep();
+        return result(AspectOutcome::Fail(e));
+    }
+    if let Err(e) = ok(agent, "POST", "/hive/save", &json!({ "handle": h2 })) {
+        sweep();
+        return result(AspectOutcome::Fail(e));
+    }
+    let d1 = match dump(agent, &h2) {
+        Ok(d) => d,
+        Err(e) => {
+            sweep();
+            return result(AspectOutcome::Fail(e));
+        }
+    };
+    let _ = agent.call("POST", "/hive/close", &json!({ "handle": h2 }));
+
+    // Reload: the clean primary must win; the stale logs must not replay.
+    let h3 = match load_hive(agent, path) {
+        Ok(h) => h,
+        Err(e) => {
+            sweep();
+            return result(AspectOutcome::Fail(e));
+        }
+    };
+    let d2 = match dump(agent, &h3) {
+        Ok(d) => d,
+        Err(e) => {
+            sweep();
+            return result(AspectOutcome::Fail(e));
+        }
+    };
+    let _ = agent.call("POST", "/hive/close", &json!({ "handle": h3 }));
+    sweep();
+
+    let diffs = semantic::compare(&d1, &d2, &SemanticOptions::default()).diffs;
+    if diffs.is_empty() {
+        result(AspectOutcome::Pass)
+    } else {
+        let s: Vec<String> = diffs.iter().take(6).map(|d| format!("{}: {}", d.path, d.detail)).collect();
+        result(AspectOutcome::Fail(format!("reload replayed a stale log over the clean primary: {}", s.join(" | "))))
+    }
+}
+
+/// Call an endpoint expecting `ok`, returning the data payload or an error string.
+fn ok(agent: &Client, method: &str, path: &str, body: &Value) -> Result<Value, String> {
+    match agent.call(method, path, body) {
+        Ok(env) if env.ok => Ok(env.data),
+        Ok(env) => Err(format!("{path}: {:?}", env.error)),
+        Err(e) => Err(format!("{path} transport: {e}")),
+    }
+}
+
+fn create_hive(agent: &Client, path: &str) -> Result<String, String> {
+    let data = ok(agent, "POST", "/hive/create", &json!({ "path": path }))?;
+    data.get("handle").and_then(|h| h.as_str()).map(String::from).ok_or_else(|| "create: no handle".to_string())
+}
+
+fn load_hive(agent: &Client, path: &str) -> Result<String, String> {
+    let data = ok(agent, "POST", "/hive/load", &json!({ "path": path }))?;
+    data.get("handle").and_then(|h| h.as_str()).map(String::from).ok_or_else(|| "load: no handle".to_string())
 }
 
 fn empty_seq() -> SeqResult {

@@ -19,6 +19,19 @@ differential GREEN (semantic 17/17, structural 10/10, bytewise 2/2 over 14+14
 distinct hives, roundtrip 8/8, 0 warnings). The secondary `.LOG1/.LOG2` companion
 sweep noted in #94 is left to the fuzzer (which already sweeps) / the spec agent.
 
+## Recovery guard: clean primary suppresses stale log (issue #97)
+
+`recovery.rs` now appends a programmatic guard, `clean_primary_suppresses_stale_log`,
+for the CONTRACTS 0.1.9 invariant (issue #97, found by direct probing, fixed by
+library #96). It builds a high-generation hive (five saves populate both logs),
+removes ONLY the primary, writes a fresh CLEAN primary at the same path, and
+reloads: the reload must equal the clean in-memory state, not the stale log
+generation. The scenario needs a filesystem step (remove the primary, keep the
+logs) the YAML op model cannot express, so it is hardcoded rather than a YAML
+case. It asserts the stale logs actually exist before reloading (else `Na`, never
+a silent false pass), and reports `Na` on the in-memory backend (no logs).
+Recovery is now **4/4** vs the libreg agent.
+
 ## Client-differential mode (issue #68): complete, green; #68 closed
 
 The proposal phasing (`clients/proposals/harness-client-differential.md`) is
