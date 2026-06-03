@@ -1,0 +1,32 @@
+[package]
+name = "libreg-fuzz"
+version = "0.1.0"
+edition = "2021"
+description = "Operation, data, and hive fuzzers for libreg. Generates inputs that feed the differential harness."
+
+# Shared generators, coverage tracking, and triage live in the library so all
+# three fuzzer binaries reuse one deterministic core.
+[lib]
+name = "libreg_fuzz"
+path = "src/lib.rs"
+
+[[bin]]
+name = "op_fuzz"
+path = "src/bin/op_fuzz.rs"
+
+[[bin]]
+name = "data_fuzz"
+path = "src/bin/data_fuzz.rs"
+
+[[bin]]
+name = "hive_fuzz"
+path = "src/bin/hive_fuzz.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+base64 = "0.22"
+
+[profile.release]
+opt-level = 3

@@ -1,0 +1,8 @@
+# Transient fuzzer working directories (generated each run, not committed).
+# corpus/pending/ is already ignored by the repo-root .gitignore.
+corpus/pending-data/
+corpus/pending-hive/
+results/
+results-data/
+results-hive/
+target/
