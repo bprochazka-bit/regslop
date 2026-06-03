@@ -42,10 +42,26 @@ reports libreg GREEN (100 sequences, 0 failures on the latest run).
 
 ## Findings this session
 
-None confirmed against libreg. A short run (8 seqs) initially surfaced four
-`validation-mismatch` (roundtrip) "findings", but triage proved all four were
-fuzzer/harness artifacts, not libreg bugs (see "Lessons" below). After fixing
-them, libreg is GREEN. A real bug hunt needs the long run that is now unblocked.
+One confirmed libreg bug, filed as **issue #97**: `hive_load` of a CLEAN primary
+(seq == seq) replays stale `.LOG1/.LOG2` left at the path, so the reload returns
+an old log generation instead of the freshly saved hive. This violates the
+invariant the spec agent added in CONTRACTS 0.1.9 in response to my issue #93
+(clean primary is authoritative; a clean save must not leave replayable logs).
+Minimal curl repro in the issue; reproduces at libreg `810d757`. Owner: library
+(log layer). The fuzzer's companion sweep masks this from `op_fuzz`, so it was
+found by directly probing the new 0.1.9 invariant via the agent API.
+
+Aside from that, every other divergence traced back to a fuzzer/harness artifact
+(see "Lessons"), and libreg held up across all three modes:
+
+- `op_fuzz`: 100 sequences, 0 failures (structural + roundtrip, single agent).
+- `data_fuzz`: 22/22 value edge cases (db boundary, 64K binary, surrogate
+  pairs, embedded nulls, integer limits).
+- `hive_fuzz`: 120 mutated hives, 0 crashes, agent alive, 0 panics. 16 were
+  loaded-then-flagged-invalid (graceful), the rest accepted or cleanly rejected.
+
+A longer campaign is still needed to call libreg fuzz-clean; this is bring-up
+scale.
 
 ## Lessons (what the false positives taught, all fixed)
 
@@ -66,9 +82,17 @@ them, libreg is GREEN. A real bug hunt needs the long run that is now unblocked.
    predicate now requires the same failure SIGNATURE and a `roundtrip_consistent`
    sequence (no mutating op after the last `hive_save`), so every minimized
    repro stays a valid roundtrip test.
+4. **hive_fuzz called everything a crash.** It treated any harness failure as a
+   crash, so 14/60 mutants were filed as P0 crashes. But feeding a corrupt hive
+   and getting "structurally invalid" back is the EXPECTED graceful path (load
+   rejects it, or loads it and `/hive/validate` flags it), with the agent alive.
+   A real crash kills the worker and transport-errors (`OpDivergence`). `is_crash`
+   now distinguishes the two; structural-invalid is reported as graceful, not
+   filed. Confirmed by a direct load + liveness check (agent stayed up, no panic).
 
-These three together are why "verify with curl before filing" is mandatory: all
-four initial findings would have been bogus libreg bug reports.
+These together are why "verify with curl/direct repro before filing" is
+mandatory: every one would otherwise have been a bogus libreg bug report (four
+roundtrip, fourteen crash).
 
 ## Coverage and fuzz time
 
