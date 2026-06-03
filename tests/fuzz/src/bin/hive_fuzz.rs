@@ -22,7 +22,8 @@
 //!             [--crashes-dir DIR] [--no-minimize]
 
 use libreg_fuzz::generators::mutate::{self, Mutation};
-use libreg_fuzz::harness_runner::{self, HarnessConfig};
+use libreg_fuzz::harness_runner::{self, HarnessConfig, Verdict};
+use libreg_fuzz::triage::FailureKind;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -144,22 +145,36 @@ fn materialize(case: &Case, original: &[u8], hive_dir: &Path, out_dir: &Path) {
         .unwrap_or_else(|e| fatal(&format!("writing test yaml: {e}")));
 }
 
-/// Run a single case through the harness and report whether libreg crashed
-/// (any harness "problem", surfaced as a failing verdict). Re-materializes the
-/// hive for the given mutation set first, so it doubles as the minimizer probe.
+/// A true crash, distinct from libreg gracefully flagging a corrupt hive.
+///
+/// Feeding a malformed hive and getting "structurally invalid" back is the
+/// EXPECTED graceful path (the loader either rejects it or loads it and its
+/// `/hive/validate` reports invalid): the agent is alive and behaved. That shows
+/// up as `DifferStructural` and must NOT be filed as a crash. A real crash or
+/// hang kills the worker, so the request transport-errors, which the harness
+/// records as a "problem" -> `OpDivergence`. Only that, or the agent becoming
+/// unreachable for the whole run, is a P0 crash.
+fn is_crash(v: &Verdict) -> bool {
+    v.kind == Some(FailureKind::OpDivergence)
+}
+
+/// Run a single case through the harness and report whether it crashed libreg.
+/// Re-materializes the hive for the given mutation set first, so it doubles as
+/// the minimizer probe. A harness error (no report at all) means the agent went
+/// away, which is itself a crash signal.
 fn crashes(cfg: &HarnessConfig, case: &Case, original: &[u8], hive_dir: &Path) -> bool {
     let dir = std::env::temp_dir().join(format!("hive_fuzz_{}", case.name));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).ok();
     materialize(case, original, hive_dir, &dir);
     let res = dir.join("results");
-    let verdict = harness_runner::run(cfg, &dir, &res)
-        .ok()
-        .and_then(|v| v.into_iter().find(|v| v.name == case.name))
-        .map(|v| v.failed())
-        .unwrap_or(false);
+    let crashed = match harness_runner::run(cfg, &dir, &res) {
+        Ok(verdicts) => verdicts.iter().find(|v| v.name == case.name).is_some_and(is_crash),
+        // No report produced: the agent did not answer, i.e. it died.
+        Err(_) => true,
+    };
     let _ = std::fs::remove_dir_all(&dir);
-    verdict
+    crashed
 }
 
 /// Greedily drop mutations while the crash persists, yielding a 1-minimal set.
@@ -251,16 +266,21 @@ fn main() {
 
     let verdicts = harness_runner::run(&cfg, &args.out, &PathBuf::from("tests/fuzz/results-hive"))
         .unwrap_or_else(|e| fatal(&format!("running harness: {e}")));
-    let crashed: Vec<_> = verdicts.iter().filter(|v| v.failed()).collect();
+    let crashed: Vec<_> = verdicts.iter().filter(|v| is_crash(v)).collect();
+    // Mutants libreg loaded but flagged invalid (or that fail another structural
+    // check): graceful handling, the expected outcome for corrupt input, not a
+    // crash. Reported for visibility only.
+    let flagged_invalid = verdicts.iter().filter(|v| v.failed() && !is_crash(v)).count();
     eprintln!(
-        "\n{} mutated hives loaded: {} clean (accepted or cleanly rejected), {} CRASHED libreg",
+        "\n{} mutated hives loaded: {} handled gracefully ({} flagged invalid), {} CRASHED libreg",
         verdicts.len(),
         verdicts.len() - crashed.len(),
+        flagged_invalid,
         crashed.len()
     );
 
     if crashed.is_empty() {
-        eprintln!("No crashes. libreg rejected every malformed hive cleanly.");
+        eprintln!("No crashes: libreg accepted or cleanly flagged every malformed hive (P0 goal met).");
         return;
     }
 
