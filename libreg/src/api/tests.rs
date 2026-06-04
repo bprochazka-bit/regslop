@@ -174,6 +174,16 @@ fn c_abi_round_trips_a_hive() {
         );
         assert_eq!((sub_n, val_n), (0, 5));
 
+        // A created key has no class: key_class succeeds with a zero-length
+        // buffer (the consumer reads empty as absent / canonical null).
+        let (mut cp, mut cl) = (std::ptr::null_mut(), 0usize);
+        assert_eq!(
+            libreg_key_class(handle, key.as_ptr(), &mut cp, &mut cl),
+            LibregStatus::Ok
+        );
+        assert_eq!(cl, 0);
+        take_bytes(cp, cl);
+
         // Security: read the root's binary descriptor, set it on the subkey,
         // read it back unchanged. (Binary, not SDDL: the consumer converts.)
         let root = cs("");

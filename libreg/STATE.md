@@ -25,11 +25,19 @@ supplies, spec appends, mirroring ADR 0004).
   `Mutex<HashMap<u64, HiveEntry>>` (HiveEntry = hive + bound path) with a
   monotonic counter (0 is never valid). An unknown/closed handle is
   HANDLE_INVALID, never UB. Poisoned-lock recovery via `into_inner`.
-- `src/api/mod.rs`: 18 `#[no_mangle] extern "C"` entry points, each wrapped in
+- `src/api/mod.rs`: 19 `#[no_mangle] extern "C"` entry points, each wrapped in
   `guard()` (catch_unwind -> INTERNAL). version, last_error, free; hive
-  create/load/save/close; key create/delete/list_subkeys/list_values/info;
+  create/load/save/close; key create/delete/list_subkeys/list_values/info/class;
   value set/get/delete; key_security get/set; validate. Buffers handed out as
   (ptr,len) freed by `libreg_free`; name lists as NUL-separated UTF-8 + count.
+- `libreg_key_class` + `Hive::key_class` (logical) added after the harness
+  flagged (#110 review) that the canonical form COMPARES `class_name` (only
+  `last_write` is ignore-able), and nothing exposed it. The logical getter
+  reads the nk's class fields and decodes the UTF-16LE class bytes; the C ABI
+  returns it as UTF-8 (len 0 = absent). NOTE: this was a libreg-wide gap, not
+  C-ABI-specific: `agents/linux/src/libreg_backend.rs:319` hardcodes
+  `class_name: None`, so the libreg HTTP backend also diverges from offreg on a
+  classed key; the agent can now adopt `Hive::key_class` to fix that too.
 - `include/libreg.h`: the committed header (status enum, `libreg_hive_t`, all
   18 prototypes, ownership/threading/SDDL docs). `tests/ffi/smoke.c`: a C
   driver that links the cdylib and round-trips a value (compiled + run green:

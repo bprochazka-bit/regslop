@@ -395,6 +395,31 @@ pub unsafe extern "C" fn libreg_key_info(
     })
 }
 
+/// Get the class name of the key at `path` as UTF-8 into `out_class`/`out_len`
+/// (release with [`libreg_free`]). A length of 0 means the key has no class
+/// (equivalently an empty class), so a consumer treats empty as absent, the
+/// way the canonical form's `class_name` is null when absent. libreg's create
+/// path never sets a class, so this is empty for created keys; it is meaningful
+/// for keys read from a loaded hive.
+///
+/// # Safety
+/// `path` is a C string; the out pointers must be non-null/writable.
+#[no_mangle]
+pub unsafe extern "C" fn libreg_key_class(
+    handle: u64,
+    path: *const c_char,
+    out_class: *mut *mut u8,
+    out_len: *mut usize,
+) -> LibregStatus {
+    guard(|| {
+        let path = cstr(path, "path")?;
+        handle::with_entry(handle, |entry| {
+            let class = entry.hive.key_class(path)?.unwrap_or_default();
+            emit_bytes(class.as_bytes(), out_class, out_len)
+        })
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Values
 // ---------------------------------------------------------------------------

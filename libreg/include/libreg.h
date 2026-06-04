@@ -128,6 +128,13 @@ libreg_status libreg_key_list_values(libreg_hive_t handle, const char *path,
 libreg_status libreg_key_info(libreg_hive_t handle, const char *path,
                               uint64_t *out_subkeys, uint64_t *out_values);
 
+/* Get the class name of key `path` as UTF-8 into *out_class/*out_len (release
+ * with libreg_free). Length 0 means no class. Created keys have none; a class
+ * appears on keys read from a loaded hive. Needed to build the canonical form,
+ * whose class_name is null when absent (an empty class reads as absent). */
+libreg_status libreg_key_class(libreg_hive_t handle, const char *path,
+                               uint8_t **out_class, size_t *out_len);
+
 /* ---- Values ---------------------------------------------------------- */
 
 /* Set value `name` on key `key_path` to `data`/`data_len` of REG_* type
