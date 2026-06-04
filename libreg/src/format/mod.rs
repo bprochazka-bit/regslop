@@ -70,14 +70,12 @@ pub enum FormatError {
 impl core::fmt::Display for FormatError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            FormatError::Truncated { expected, found } => write!(
-                f,
-                "buffer truncated: need {expected} bytes, found {found}"
-            ),
-            FormatError::BadSignature { structure, found } => write!(
-                f,
-                "bad {structure} signature: {found:02x?}"
-            ),
+            FormatError::Truncated { expected, found } => {
+                write!(f, "buffer truncated: need {expected} bytes, found {found}")
+            }
+            FormatError::BadSignature { structure, found } => {
+                write!(f, "bad {structure} signature: {found:02x?}")
+            }
             FormatError::OutOfBounds {
                 structure,
                 offset,

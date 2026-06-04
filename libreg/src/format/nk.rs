@@ -291,7 +291,10 @@ mod tests {
         payload[0..2].copy_from_slice(b"vk");
         assert!(matches!(
             KeyNode::parse(&payload),
-            Err(FormatError::BadSignature { structure: "nk", .. })
+            Err(FormatError::BadSignature {
+                structure: "nk",
+                ..
+            })
         ));
     }
 
@@ -300,11 +303,13 @@ mod tests {
         let root = KeyNode::new_root("ROOT", 0x78, 7);
         let mut payload = root.to_payload();
         // Claim a 4000-byte name in a payload that does not have it.
-        payload[OFF_KEY_NAME_LEN..OFF_KEY_NAME_LEN + 2]
-            .copy_from_slice(&4000u16.to_le_bytes());
+        payload[OFF_KEY_NAME_LEN..OFF_KEY_NAME_LEN + 2].copy_from_slice(&4000u16.to_le_bytes());
         assert!(matches!(
             KeyNode::parse(&payload),
-            Err(FormatError::OutOfBounds { structure: "nk name", .. })
+            Err(FormatError::OutOfBounds {
+                structure: "nk name",
+                ..
+            })
         ));
     }
 }

@@ -66,7 +66,11 @@ fn cell_walk_for_corpus_hives() {
 
     for hive in &hives {
         let bytes = fs::read(hive).expect("read corpus hive");
-        assert!(bytes.len() >= BASE_BLOCK_SIZE, "{} too short", hive.display());
+        assert!(
+            bytes.len() >= BASE_BLOCK_SIZE,
+            "{} too short",
+            hive.display()
+        );
 
         let bb = BaseBlock::parse(&bytes).expect("parse base block");
         let hbins_size = bb.hbins_size as usize;
