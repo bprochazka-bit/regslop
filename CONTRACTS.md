@@ -4,7 +4,12 @@ This file is the single source of truth for interfaces between components.
 All agents read this file. Only the spec agent writes to it.
 Changes require a PR labeled `contracts` and a version bump.
 
-**Current version: 0.1.9**
+This document governs the agent HTTP protocol. The in-process C ABI that
+native language bindings link against is governed by its companion
+`docs/ffi-abi.md`, which carries this same version and reuses the error-code
+table and canonical-form oracle defined here. Both are the spec agent's.
+
+**Current version: 0.1.10**
 
 ## Versioning
 
@@ -375,6 +380,9 @@ is distinct from `TYPE_MISMATCH`: the latter applies when a well-formed
 
 ## What This Document Does Not Cover
 
+- The in-process C ABI for native language bindings: governed by the
+  companion `docs/ffi-abi.md` (same version, same error-code table and
+  canonical-form oracle). This document covers the HTTP protocol only.
 - Internal data structures of libreg (each layer's CLAUDE.md owns those)
 - Build systems, packaging, CI (see top-level README.md when written)
 - Performance targets (deferred to v0.2)
@@ -382,6 +390,15 @@ is distinct from `TYPE_MISMATCH`: the latter applies when a well-formed
 
 ## Change Log
 
+- 0.1.10 (minor): add the companion `docs/ffi-abi.md` governing the in-process
+  C ABI for native bindings (issue #107, gating #106/#108). Rules the location
+  (a separate spec-agent doc that this file points to), the 1:1 error-code
+  mapping to the table above (with the BAD_REQUEST/INTERNAL split preserved),
+  the binary-native value/string representation at the boundary (the base64
+  and QWORD-as-string wire rules do NOT apply; canonical form stays the
+  oracle), shared versioning via the backend-id getter, and panic safety. The
+  concrete symbol list and libreg.h are deferred until the cdylib lands. No
+  change to the HTTP protocol.
 - 0.1.9 (patch): clarify log recovery precedence (issue #93). A clean primary
   (primary seq == secondary seq) is authoritative; a load MUST NOT replay a
   log over it, and a clean `hive_save` MUST NOT leave log companions that a
