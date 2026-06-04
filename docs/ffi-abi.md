@@ -50,9 +50,11 @@ The C ABI exposes the same registry operations CONTRACTS.md defines for the
 HTTP protocol, so a binding reaches the whole library: hive lifecycle
 (create/load/save/close), keys (create with RegCreateKeyEx intermediates,
 delete with a recursive flag, rename, list, info), values (set/get/delete over
-all REG_* types), security (get/set SDDL), and diagnostics (canonical dump,
-checksum, validate). No operation, type, or error code exists at the C ABI
-that is not already defined for the HTTP protocol. This is an additive
+all REG_* types), security (get/set the binary self-relative descriptor;
+SDDL conversion is consumer-side per ADR 0003, unlike the HTTP protocol which
+carries SDDL on the wire), and diagnostics (validate; see "Exported surface"
+for why dump/checksum are consumer-side). No operation, type, or error code
+exists at the C ABI that is not already defined for the HTTP protocol. This is an additive
 in-process surface; it does not change the HTTP agents or the wire protocol.
 
 ## 1. Error model
@@ -130,8 +132,9 @@ implements them and bindings may rely on them:
 
 The harness is the judge (universal rule 3). The acceptance bar for the C ABI
 (and for #106) is a binding- or C-driven sequence (create a hive, write each
-REG_* type, set and read an SDDL, save, reload, dump) whose result is
-semantically equal to the same sequence driven through the HTTP agent.
+REG_* type, set and read a security descriptor, save, reload, dump) whose
+result is semantically equal to the same sequence driven through the HTTP
+agent.
 Wiring an FFI-driven backend into the harness alongside the agent-driven one
 is the intended way to keep this honest.
 
