@@ -9,7 +9,7 @@ native language bindings link against is governed by its companion
 `docs/ffi-abi.md`, which carries this same version and reuses the error-code
 table and canonical-form oracle defined here. Both are the spec agent's.
 
-**Current version: 0.1.10**
+**Current version: 0.1.11**
 
 ## Versioning
 
@@ -390,6 +390,11 @@ is distinct from `TYPE_MISMATCH`: the latter applies when a well-formed
 
 ## Change Log
 
+- 0.1.11 (patch): record the shipped C ABI surface in `docs/ffi-abi.md` (the
+  20 `libreg_*` symbols from #106/PR #110, the `libreg_status` enum values
+  1:1 with the error table, and the deliberate exclusion of hive/dump and
+  hive/checksum so the canonical-form oracle stays single-sourced). Filling in
+  the deferral from 0.1.10; no rule change.
 - 0.1.10 (minor): add the companion `docs/ffi-abi.md` governing the in-process
   C ABI for native bindings (issue #107, gating #106/#108). Rules the location
   (a separate spec-agent doc that this file points to), the 1:1 error-code

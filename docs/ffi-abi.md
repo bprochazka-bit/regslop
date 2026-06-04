@@ -1,7 +1,8 @@
 # libreg C ABI: governing rules
 
-Status: governing rules ratified (issue #107); the concrete symbol list and
-`libreg.h` are the library agent's to fill in as Layer 4 `api/` lands (#106).
+Status: ratified. Governing rules from issue #107; the concrete symbol list
+is recorded below from the shipped Layer 4 `api/` (#106, PR #110, 20 symbols
+on main).
 
 This document is part of the contract surface. CONTRACTS.md remains the source
 of truth for the agent HTTP protocol; this file governs the in-process C ABI
@@ -32,16 +33,16 @@ Governs now (ratified, #106 must conform):
 - Panic safety and buffer ownership.
 - The acceptance oracle.
 
-Defers to the library agent (#106), to be recorded here once implemented:
+Recorded from the shipped implementation (#106, see "Exported surface"):
 
 - The exact exported symbol names and signatures.
-- The opaque handle type name(s).
+- The opaque handle type (`libreg_hive_t`, a `uint64_t`; 0 is never valid).
 - The committed `libreg/include/libreg.h`.
 
-The pattern mirrors ADR 0004: the governing rules are pinned before the
-implementation so #106 does not bake in types the spec would reject; the
-concrete surface is appended here when the `cdylib` exists, via a follow-up
-`contracts` PR, not invented up front.
+The pattern mirrored ADR 0004: the governing rules were pinned before the
+implementation so #106 did not bake in types the spec would reject; the
+concrete surface below was appended once the `cdylib` landed, not invented up
+front.
 
 ## Scope
 
@@ -134,14 +135,65 @@ semantically equal to the same sequence driven through the HTTP agent.
 Wiring an FFI-driven backend into the harness alongside the agent-driven one
 is the intended way to keep this honest.
 
+## Exported surface
+
+The committed header is `libreg/include/libreg.h`; it is the source of truth
+for exact signatures. The shipped surface (#106, PR #110) is 20 `libreg_*`
+symbols over an opaque `libreg_hive_t` (`uint64_t`, 0 never valid). Every call
+returns `libreg_status`; results come back through out-parameters; buffers the
+library hands out are released with `libreg_free(ptr, len)`.
+
+Library-wide: `libreg_version`, `libreg_last_error`, `libreg_free`.
+
+Hive lifecycle: `libreg_hive_create`, `libreg_hive_load`, `libreg_hive_save`,
+`libreg_hive_close`.
+
+Keys: `libreg_key_create`, `libreg_key_delete` (recursive flag),
+`libreg_key_rename`, `libreg_key_list_subkeys`, `libreg_key_list_values`,
+`libreg_key_info` (subkey/value counts), `libreg_key_class` (class name;
+length 0 = absent, matching canonical null-when-absent).
+
+Values: `libreg_value_set`, `libreg_value_get` (out type + raw bytes),
+`libreg_value_delete`.
+
+Security: `libreg_key_security_get`, `libreg_key_security_set` (raw binary
+self-relative descriptor; SDDL conversion is the consumer's job, ADR 0003).
+
+Diagnostics: `libreg_validate` (NUL-separated problem list; count 0 = clean).
+
+### Error enum values
+
+`libreg_status` assigns these integers, 1:1 with the CONTRACTS error table in
+its order, success first: `OK` 0, `HIVE_NOT_FOUND` 1, `HIVE_CORRUPT` 2,
+`HANDLE_INVALID` 3, `KEY_NOT_FOUND` 4, `KEY_EXISTS` 5, `VALUE_NOT_FOUND` 6,
+`TYPE_MISMATCH` 7, `ACCESS_DENIED` 8, `LOG_CORRUPT` 9, `KEY_HAS_CHILDREN` 10,
+`BAD_REQUEST` 11, `INTERNAL` 12.
+
+### Operations intentionally NOT in the C ABI
+
+`/hive/dump` (canonical JSON) and `/hive/checksum` are deliberately excluded
+(library agent's decision, #106; spec-accepted). The canonical form is the
+harness's semantic oracle (`agents/linux/src/canonical.rs`); a second
+serializer in libreg would be a second implementation of the oracle that can
+drift, the failure mode the oracle exists to prevent. Instead the C ABI
+exposes the enumeration primitives (`list_subkeys`, `list_values`,
+`value_get` with type and raw data, `key_security`, `key_class`) so a binding
+or FFI backend builds canonical JSON with the same canonicalizer it already
+trusts. Checksum is sha256 of the file / canonical bytes; libreg takes no
+crypto dependency by policy, so the consumer hashes. So the C ABI provides
+every registry *operation* (lifecycle, keys incl. rename, values, security,
+validate) plus the primitives to build dump/checksum, with serialization and
+hashing left consumer-side by design. (`last_write` is also not exposed: the
+`semantic` differ ignores timestamps.)
+
 ## Downstream
 
-- Library agent (#106): implement Layer 4 `api/` as a `cdylib` conforming to
-  the rules above; then record the exported symbols, handle type(s), and the
-  committed `libreg/include/libreg.h` here via a follow-up `contracts` PR
-  (the spec agent appends them; the library agent supplies them).
+- Library agent (#106): DONE. Layer 4 `api/` shipped as a `cdylib` (PR #110),
+  conforming to these rules; the surface above is recorded from it. Any future
+  symbol change updates this doc via a `contracts` PR.
 - Clients agent (#108): the Python `ctypes` binding targets the ratified code
   names and the binary-native representation above; it does not apply the
-  base64 / QWORD-as-string wire rules.
-- Spec agent: on the first `cdylib`, append the concrete symbol list to this
-  document and confirm the integer enum values, keeping the 1:1 mapping.
+  base64 / QWORD-as-string wire rules. Unblocked.
+- Spec agent: surface recorded and enum values confirmed 1:1. If the library
+  later exposes a dump/checksum helper (it may, calling the agent's
+  canonicalizer rather than duplicating it), record that here then.
