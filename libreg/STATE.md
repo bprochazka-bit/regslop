@@ -4,8 +4,8 @@ Last updated: 2026-06-04 (library agent)
 
 ----- Layer 4 C ABI, first cut (#106; branch `agent/library-c-abi` off main) -----
 
-THIS session: implemented Layer 4 `api/`, the stable C ABI (`cdylib`) native
-bindings link against (issue #106), now that the spec ratified the governing
+THIS session (PR #110): implemented Layer 4 `api/`, the stable C ABI (`cdylib`)
+native bindings link against (issue #106), now that the spec ratified the governing
 rules in `docs/ffi-abi.md` + CONTRACTS 0.1.10 (issue #107, PR #109). The ruling:
 the error enum mirrors the CONTRACTS error table 1:1; binary-native
 representation (ptr/len, native ints, NOT base64/QWORD-string); one project
