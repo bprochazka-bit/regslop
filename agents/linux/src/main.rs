@@ -10,6 +10,7 @@
 mod backend;
 mod canonical;
 mod error;
+mod ffi_backend;
 mod handlers;
 mod libreg_backend;
 mod model;
@@ -17,6 +18,7 @@ mod sddl;
 mod valuec;
 
 use backend::{Backend, MemBackend};
+use ffi_backend::FfiBackend;
 use libreg_backend::LibregBackend;
 use serde_json::{json, Value as J};
 use std::sync::Arc;
@@ -45,13 +47,13 @@ fn parse_args() -> Config {
                 backend_id = args.next().unwrap_or_else(|| fatal("--backend-id needs a value"));
             }
             "--backend" => {
-                backend = args.next().unwrap_or_else(|| fatal("--backend needs a value (mem|libreg)"));
-                if backend != "mem" && backend != "libreg" {
-                    fatal("--backend must be 'mem' or 'libreg'");
+                backend = args.next().unwrap_or_else(|| fatal("--backend needs a value (mem|libreg|ffi)"));
+                if backend != "mem" && backend != "libreg" && backend != "ffi" {
+                    fatal("--backend must be 'mem', 'libreg', or 'ffi'");
                 }
             }
             "-h" | "--help" => {
-                eprintln!("libreg-agent-linux [--port N] [--backend-id ID] [--backend mem|libreg]");
+                eprintln!("libreg-agent-linux [--port N] [--backend-id ID] [--backend mem|libreg|ffi]");
                 std::process::exit(0);
             }
             other => fatal(&format!("unknown argument: {other}")),
@@ -74,6 +76,7 @@ fn main() {
     };
     let backend: Arc<dyn Backend> = match cfg.backend.as_str() {
         "libreg" => Arc::new(LibregBackend::new(cfg.backend_id.clone())),
+        "ffi" => Arc::new(FfiBackend::new(cfg.backend_id.clone())),
         _ => Arc::new(MemBackend::new(cfg.backend_id.clone())),
     };
     eprintln!(

@@ -1,6 +1,37 @@
 # Linux Agent: STATE
 
-Last updated: 2026-06-03
+Last updated: 2026-06-04
+
+## FfiBackend: the C ABI as a Backend, for the FFI acceptance (issue #112)
+
+`src/ffi_backend.rs` adds `FfiBackend`, a third `Backend` (alongside Mem and
+Libreg) that drives libreg's Layer 4 C ABI (`libreg::api::*`, the cdylib surface,
+#106) instead of the rlib `logical::Hive`. The agents link libreg by path, so the
+`extern "C"` entry points are called directly from Rust (every `unsafe` block is a
+documented FFI call into that boundary, with its panic guard and global handle
+registry). Selected with `--backend ffi`.
+
+It reuses the agent's existing `valuec` (value codec), `sddl` (binary <-> SDDL),
+and `canonical` (dump), so its canonical form matches `LibregBackend`'s by
+construction; any divergence is then a real C ABI surface bug. The dump walks the
+hive through the C ABI enumeration primitives (`list_subkeys` / `list_values` /
+`value_get` / `key_security_get`), so those get exercised, not just the mutations.
+Handles are the C ABI's `u64` tokens stringified; `last_write` is fixed and
+`class_name` null, matching the rlib backend's dump (the differ ignores
+`last_write`). `crash_save` is unsupported (the C ABI save writes a clean primary
+only; recovery stays on the libreg backend).
+
+Acceptance: the standard two-agent differential with `--backend libreg` vs
+`--backend ffi` is **green** (semantic 17/17, structural 10/10, bytewise 2/2,
+roundtrip 8/8) over the op-sequence corpus and all five synthetic reference hives.
+Run it with `scripts/run.sh --ffi`.
+
+**One layering note (flagged for the binding/spec):** the C ABI's
+`libreg_key_create` is lenient on malformed paths (a leading separator), while the
+agent enforces the contract's BAD_REQUEST via `check_path`, as all its backends
+do. `FfiBackend.key_create` does the same `split_path` validation (needed for
+semantic equality, else it creates a spurious key). A direct C ABI consumer (the
+Python binding, #108) must validate paths itself.
 
 ## SDDL SID-alias table completed (issue #102)
 
