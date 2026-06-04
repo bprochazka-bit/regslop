@@ -2,6 +2,28 @@
 
 Last updated: 2026-06-04
 
+## Latest session: Debian packaging (#117)
+
+Added `packaging/build-deb.sh`, which builds `python3-libreg` (a pure-Python,
+`Architecture: all` package) with `dpkg-deb` only, modeled on
+`clients/packaging/build-deb.sh` and `libreg/packaging/build-deb.sh`. It
+installs the `libreg` package to `/usr/lib/python3/dist-packages/libreg/`,
+ships the README to `/usr/share/doc/python3-libreg/`, and declares
+`Depends: python3:any, liblibreg0 (>= 0.1.0)`.
+
+`libreg/_ffi.py` now also searches the SONAME `liblibreg.so.0` (and the
+`liblibreg.so` dev symlink) after the repo `target/` paths, so the binding
+loads the installed C ABI by name off a system install while keeping
+`$LIBREG_LIBRARY` and the repo build as development fallbacks.
+
+Verified: the `.deb` builds; `dpkg-deb -I`/`-c` show the right control,
+`Depends`, and contents; and a clean-room test (extract `python3-libreg` +
+`liblibreg0` to a staging root, with no `$LIBREG_LIBRARY` and the package's
+repo-relative `target/` not present) imports `libreg`, loads `liblibreg.so.0`
+by SONAME via `LD_LIBRARY_PATH`, and round-trips a value. The 29 unit/FFI tests
+still pass. This is the #117 deliverable; #115 (`liblibreg0`) is its merged
+prerequisite.
+
 ## What this subtree is
 
 `clients/python/` is a native Python binding for libreg (issue #108). It links

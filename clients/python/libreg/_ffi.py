@@ -23,12 +23,19 @@ def _candidate_paths():
     if env:
         yield env
     # Repo-relative build outputs, resolved from this file's location
-    # (clients/python/libreg/_ffi.py -> repo root is three levels up).
+    # (clients/python/libreg/_ffi.py -> repo root is three levels up). Present
+    # only in a source checkout; absent on a system install, where they are
+    # skipped and the loader falls through to the SONAME below.
     repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
     for profile in ("release", "debug"):
         yield os.path.join(repo, "libreg", "target", profile, "liblibreg.so")
-    # Finally, let the dynamic loader search (LD_LIBRARY_PATH / system paths).
+    # Let the dynamic loader search (LD_LIBRARY_PATH / ldconfig cache / system
+    # paths). The versioned SONAME `liblibreg.so.0` is what the liblibreg0
+    # Debian package installs and is the canonical name off a system install;
+    # the bare `liblibreg.so` is the liblibreg-dev symlink, a fallback.
+    yield "liblibreg.so.0"
     yield "liblibreg.so"
+
 
 
 def load_library(path=None):

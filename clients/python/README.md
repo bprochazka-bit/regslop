@@ -108,3 +108,18 @@ skip automatically if it is not present.
 ## Example
 
 `examples/quickstart.py` is a runnable end-to-end demo.
+
+## Packaging
+
+`packaging/build-deb.sh` builds a Debian package, `python3-libreg`, with
+`dpkg-deb` only (no external tooling, Debian-first):
+
+```bash
+clients/python/packaging/build-deb.sh    # -> clients/python/target/deb/python3-libreg_*_all.deb
+```
+
+It is pure Python (`Architecture: all`) and installs the `libreg` package to the
+system dist-packages path. It `Depends: liblibreg0` (the C ABI runtime built by
+`libreg/packaging/build-deb.sh`) and loads `liblibreg.so.0` by SONAME off a
+normal install, so no `$LIBREG_LIBRARY` is needed once both packages are
+installed. Install `liblibreg0` first (or alongside).
