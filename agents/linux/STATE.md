@@ -1,6 +1,24 @@
 # Linux Agent: STATE
 
-Last updated: 2026-06-01
+Last updated: 2026-06-03
+
+## SDDL SID-alias table completed (issue #102)
+
+The operation fuzzer (semantic axis, unblocked by #94) found that `set_key_security`
+rejected standard SDDL SID abbreviations as `BAD_REQUEST "unknown SID or alias"`.
+The alias table lives here in `src/sddl.rs` (the agent owns SDDL <-> binary, ADR
+0003), not in libreg as the issue first guessed. Refactored the two ad-hoc match
+arms into one `SID_ALIASES` table used in both directions (so round-trips emit the
+same token offreg does), and added the standard absolute aliases: AU, AN, IU, NU,
+SU, CO, CG, WR, PU, AO, BG, BO, ER (alongside the existing SY, BA, BU, WD, RC).
+
+Domain-relative `LA`/`LG` (local admin/guest, RID 500/501) are intentionally NOT
+added: they expand to `S-1-5-21-<machine>-50x`, with no fixed value offline (Win32
+`ConvertStringSidToSid` rejects them standalone too), so they fall through to the
+`S-1-...` path rather than getting a fabricated SID that would not round-trip
+against offreg. Flagged for the fuzzer/spec to confirm against offreg or exclude.
+Verified: all 18 absolute aliases accepted by the live agent; unit tests round-trip
+each; LA/LG still rejected by design.
 
 ## Recovery: /test/crash_save + log-backed save/load (ADR 0004, issue #61)
 
