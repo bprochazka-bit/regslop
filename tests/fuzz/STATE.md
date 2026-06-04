@@ -37,8 +37,14 @@ reports libreg GREEN (100 sequences, 0 failures on the latest run).
   entry; `--emit-catalog` writes `corpus/interesting/values.yaml`.
 - `hive_fuzz` (priority 3, functional): seeded structural mutations of corpus
   hives loaded via the libreg agent; needs `--backend libreg`.
-- `scripts/run-fuzz.sh [op|data|hive]`: builds, starts the libreg agent
-  (optional `--standin`), runs the chosen fuzzer.
+- `recovery_fuzz` (functional): crash-injection recovery fuzzer. Generates
+  baseline + uncommitted-mutation sequences with a crash point, drives the
+  harness recovery runner via `--recovery-tests-dir` (which `crash_save`s at the
+  point, reloads, and checks the recovered hive matches the intended state).
+  Cycles all three crash points (after_first_log, after_log_before_primary,
+  after_primary). Single agent, `--backend libreg` (mem reports n/a).
+- `scripts/run-fuzz.sh [op|data|hive|recovery]`: builds, starts the libreg
+  agent (optional `--standin`), runs the chosen fuzzer.
 
 ## Findings this session
 
@@ -120,6 +126,15 @@ clean-primary recovery fix (issue #93/#97), I re-ran with both fixes:
 Takeaway: libreg-vs-`mem` is useful for catching cases where libreg over-rejects
 valid input, but is too noisy on default-SD and persistence to be a general
 semantic oracle. A meaningful semantic axis needs offreg (the Windows VM).
+
+## Recovery fuzzing (new mode)
+
+Built `recovery_fuzz` and ran it against `--backend libreg`: **300/300 cases
+recovered correctly**, 100 per crash point, verified as real PASS (not skipped
+n/a) in the report.json. So libreg's transaction-log replay is robust at this
+scale and the #97 fix holds broadly, not just on the one minimal repro. No
+recovery defects found. This is the highest-value mode available without the
+Windows VM (recovery is libreg-internal; offreg writes no logs).
 
 ## Open items for other agents (see issues filed)
 

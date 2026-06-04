@@ -8,9 +8,10 @@
 #   run-fuzz.sh [op|data|hive] [--standin] [--count N] [--seed S] [-- <extra fuzzer args>]
 #
 # Modes:
-#   op    operation fuzzer   (default)
-#   data  value-payload fuzzer
-#   hive  structure-aware hive mutation fuzzer
+#   op        operation fuzzer   (default)
+#   data      value-payload fuzzer
+#   hive      structure-aware hive mutation fuzzer
+#   recovery  crash-injection recovery fuzzer (single agent, libreg only)
 #
 # --standin starts a SECOND agent (in-memory backend) on the windows port so the
 # semantic and bytewise axes have a second, independent implementation to diff
@@ -29,7 +30,7 @@ FUZZ_DIR="$REPO_ROOT/tests/fuzz"
 
 MODE="op"
 case "${1:-op}" in
-  op|data|hive) MODE="$1"; shift || true ;;
+  op|data|hive|recovery) MODE="$1"; shift || true ;;
 esac
 
 LINUX_PORT=7878

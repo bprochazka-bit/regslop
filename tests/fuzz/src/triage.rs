@@ -24,6 +24,9 @@ pub enum FailureKind {
     /// Cross-agent operation-level divergence (success/error-code mismatch,
     /// transport error). The harness reports these as "problems".
     OpDivergence,
+    /// A crash-recovery failure: after a `crash_save` and reload, the recovered
+    /// hive does not match the intended pre-crash state. Data loss or corruption.
+    Recovery,
 }
 
 impl FailureKind {
@@ -36,6 +39,7 @@ impl FailureKind {
             FailureKind::DifferBytewise => "differ-bytewise",
             FailureKind::ValidationMismatch => "validation-mismatch",
             FailureKind::OpDivergence => "op-divergence",
+            FailureKind::Recovery => "recovery",
         }
     }
 
@@ -110,6 +114,7 @@ pub fn classify(test: &Value) -> Option<FailureKind> {
     // Axis order matters: a structural failure is more actionable than the
     // semantic one it often also trips, so report structural first.
     for (axis, kind) in [
+        ("recovery", FailureKind::Recovery),
         ("structural", FailureKind::DifferStructural),
         ("semantic", FailureKind::DifferSemantic),
         ("roundtrip", FailureKind::ValidationMismatch),
