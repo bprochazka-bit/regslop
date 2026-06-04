@@ -73,8 +73,13 @@ covering only that layer's invariants.
 
 ## Hard Rules
 
-1. **No unsafe code outside `format/` byte-level parsers.** Even there,
-   document every unsafe block with the invariant it relies on.
+1. **No unsafe code outside `format/` byte-level parsers and the `api/`
+   FFI boundary.** A C ABI (Layer 4, issue #106) cannot be expressed in
+   safe Rust: it dereferences caller pointers and hands out buffers. The
+   `api/` layer may use unsafe only for that boundary marshaling (raw
+   pointers, handle tokens, `catch_unwind`), never for hive logic, which
+   stays in the safe lower layers. Everywhere unsafe is allowed, document
+   every unsafe block with the invariant it relies on.
 
 2. **No allocations in hot paths.** Free list operations and cell
    lookups must not allocate. Use index types, not boxed nodes.

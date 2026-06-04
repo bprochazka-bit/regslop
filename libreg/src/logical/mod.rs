@@ -303,6 +303,35 @@ impl Hive {
         Ok(())
     }
 
+    /// The class name of the key at `path`, decoded from its UTF-16LE on-disk
+    /// form, or `None` when the key has no class. Class names are stored wide
+    /// (never compressed). The canonical form carries `class_name` (null when
+    /// absent), so a consumer reads this to build it; an empty class is `None`.
+    /// libreg's create path never sets a class, so this is `None` for created
+    /// keys and only meaningful on a loaded hive.
+    pub fn key_class(&self, path: &str) -> Result<Option<String>, LogicalError> {
+        let off = self.resolve(path)?.ok_or(LogicalError::NotFound)?;
+        let nk = key::read_nk(&self.image, off)?;
+        if nk.class_name_offset == OFFSET_NONE || nk.class_name_len == 0 {
+            return Ok(None);
+        }
+        let cell = self.image.try_content(nk.class_name_offset)?;
+        let len = nk.class_name_len as usize;
+        if cell.len() < len {
+            return Err(LogicalError::Format(FormatError::OutOfBounds {
+                structure: "class name",
+                offset: nk.class_name_offset as usize,
+                need: len,
+                available: cell.len(),
+            }));
+        }
+        let units: Vec<u16> = cell[..len]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        Ok(Some(String::from_utf16_lossy(&units)))
+    }
+
     /// Offset of the key at `path`, or `None` if any component is missing.
     pub fn resolve(&self, path: &str) -> Result<Option<u32>, LogicalError> {
         let mut current = self.root_offset;
@@ -850,6 +879,34 @@ mod tests {
             hive.delete_key("", false),
             Err(LogicalError::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn reads_a_key_class_when_present() {
+        // The create path never sets a class, so hand-craft one the way a
+        // loaded hive would carry it: a cell of UTF-16LE bytes pointed at by
+        // the nk's class fields.
+        let mut hive = Hive::new_empty();
+        hive.create_key("Classy").unwrap();
+        let off = hive.resolve("Classy").unwrap().unwrap();
+
+        let mut wide = Vec::new();
+        for unit in "DynData".encode_utf16() {
+            wide.extend_from_slice(&unit.to_le_bytes());
+        }
+        let cell = hive.image.alloc(wide.len());
+        hive.image.content_mut(cell)[..wide.len()].copy_from_slice(&wide);
+        let mut nk = key::read_nk(&hive.image, off).unwrap();
+        nk.class_name_offset = cell;
+        nk.class_name_len = wide.len() as u16;
+        key::write_nk_inplace(&mut hive.image, off, &nk);
+
+        assert_eq!(
+            hive.key_class("Classy").unwrap().as_deref(),
+            Some("DynData")
+        );
+        // A key with no class (the root, and any created key) reads as None.
+        assert_eq!(hive.key_class("").unwrap(), None);
     }
 
     #[test]

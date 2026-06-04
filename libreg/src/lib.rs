@@ -6,12 +6,14 @@
 //! - Layer 1 [`alloc`]: deterministic cell allocator over the bins data.
 //! - Layer 2 [`logical`]: keys, values, security over the allocator.
 //! - Layer 3 [`log`]: dual transaction logs and crash recovery.
-//! - Layer 4 `api`: public surface (not yet implemented).
+//! - Layer 4 [`api`]: the stable C ABI (`cdylib`) native bindings link against.
 //!
-//! Lower layers must never depend on higher layers. Only `format`'s
-//! byte-level parsers may use unsafe code, and none does today.
+//! Lower layers must never depend on higher layers. Only `format`'s byte-level
+//! parsers and `api`'s FFI boundary use unsafe code (see libreg/CLAUDE.md
+//! hard rule 1); every unsafe block documents the invariant it relies on.
 
 pub mod alloc;
+pub mod api;
 pub mod format;
 pub mod log;
 pub mod logical;
