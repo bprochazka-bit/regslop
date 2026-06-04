@@ -100,6 +100,27 @@ roundtrip, fourteen crash).
 - Accumulated continuous fuzz time: still under an hour (bring-up plus a
   100-sequence confidence run). The long run is the next step.
 
+## Follow-up session (semantic differential unblocked)
+
+After the harness landed per-agent hive paths (issue #94) and libreg landed the
+clean-primary recovery fix (issue #93/#97), I re-ran with both fixes:
+
+- Verified issue #97 fixed: the clean-primary stale-log repro now returns the
+  saved hive, not the stale log generation.
+- Ran the libreg-vs-`mem` semantic differential (previously blocked by path
+  collision). It works now. 8/25 diverged, almost all from the `mem` stand-in
+  being a weak security/persistence oracle: `mem` accepts any SDDL unparsed, has
+  a stub default SD (owner SY / 1 ACE vs libreg's realistic BA / 4 ACE, which
+  matches offreg), and does not reload some saved hives. Those are expected
+  stand-in gaps, not libreg bugs.
+- One real libreg finding fell out: libreg's SDDL parser recognizes only
+  SY/BA/BU/WD/RC and rejects the other standard SID aliases (AU, CO, PU, IU, NU,
+  ...) as unknown. Filed as **issue #102** with the full coverage map.
+
+Takeaway: libreg-vs-`mem` is useful for catching cases where libreg over-rejects
+valid input, but is too noisy on default-SD and persistence to be a general
+semantic oracle. A meaningful semantic axis needs offreg (the Windows VM).
+
 ## Open items for other agents (see issues filed)
 
 - **Spec agent**: whether `hive_load` should replay pre-existing `.LOG1/.LOG2`

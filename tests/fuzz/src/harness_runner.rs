@@ -13,17 +13,22 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Remove generated hive files and their `.LOG1`/`.LOG2` transaction-log
-/// companions from a directory, matched by basename prefix. A leftover log from
-/// a previous run is replayed on the next `hive_load` and silently changes the
-/// reloaded hive, which surfaces as a phantom roundtrip failure. Every fuzzer
-/// that reuses hive paths across runs must sweep before driving the agent so
-/// each run is hermetic.
-pub fn sweep_companions(dir: &Path, prefix: &str) {
+/// companions from a directory, matched by a basename marker. A leftover log
+/// from a previous run is replayed on the next `hive_load` and silently changes
+/// the reloaded hive, which surfaces as a phantom roundtrip failure. Every fuzzer
+/// that reuses hive paths across runs sweeps before driving the agent so each run
+/// is hermetic.
+///
+/// The marker is matched as a substring, not a prefix: the harness deconflicts
+/// two local agents by prefixing the basename with the agent's port (issue #94),
+/// so a generated `fuzz_<seed>.hiv` actually lands on disk as `7878-fuzz_...`.
+/// A prefix match would miss those.
+pub fn sweep_companions(dir: &Path, marker: &str) {
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let name = e.file_name();
             let s = name.to_string_lossy();
-            if s.starts_with(prefix) && s.contains(".hiv") {
+            if s.contains(marker) && s.contains(".hiv") {
                 let _ = std::fs::remove_file(e.path());
             }
         }
