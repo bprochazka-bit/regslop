@@ -299,3 +299,82 @@ fn c_abi_reports_caller_errors() {
         assert_eq!(libreg_hive_close(handle), LibregStatus::Ok);
     }
 }
+
+#[test]
+fn c_abi_renames_a_subtree() {
+    unsafe {
+        let path =
+            std::env::temp_dir().join(format!("libreg_c_abi_rn_{}.hive", std::process::id()));
+        let cpath = cs(path.to_str().unwrap());
+        let mut h: u64 = 0;
+        assert_eq!(libreg_hive_create(cpath.as_ptr(), &mut h), LibregStatus::Ok);
+
+        // Parent\Old with a value and a child Parent\Old\Child.
+        let old = cs("Parent\\Old");
+        let child = cs("Parent\\Old\\Child");
+        assert_eq!(libreg_key_create(h, old.as_ptr()), LibregStatus::Ok);
+        assert_eq!(libreg_key_create(h, child.as_ptr()), LibregStatus::Ok);
+        let vname = cs("V");
+        let vdata = 0xABCD_1234u32.to_le_bytes();
+        assert_eq!(
+            libreg_value_set(
+                h,
+                old.as_ptr(),
+                vname.as_ptr(),
+                4,
+                vdata.as_ptr(),
+                vdata.len()
+            ),
+            LibregStatus::Ok
+        );
+
+        // Rename Parent\Old -> Parent\New.
+        let new_name = cs("New");
+        assert_eq!(
+            libreg_key_rename(h, old.as_ptr(), new_name.as_ptr()),
+            LibregStatus::Ok
+        );
+
+        // Old is gone, New has the value and the child.
+        let new = cs("Parent\\New");
+        assert_eq!(libreg_key_create(h, old.as_ptr()), LibregStatus::Ok); // Old free to recreate
+        let _ = libreg_key_delete(h, old.as_ptr(), 1);
+
+        let (mut t, mut p, mut l) = (0u32, std::ptr::null_mut(), 0usize);
+        assert_eq!(
+            libreg_value_get(h, new.as_ptr(), vname.as_ptr(), &mut t, &mut p, &mut l),
+            LibregStatus::Ok
+        );
+        assert_eq!((t, take_bytes(p, l)), (4, vdata.to_vec()));
+
+        let newchild = cs("Parent\\New\\Child");
+        let (mut sn, mut vn) = (0u64, 0u64);
+        assert_eq!(
+            libreg_key_info(h, newchild.as_ptr(), &mut sn, &mut vn),
+            LibregStatus::Ok
+        );
+
+        // Error paths: rename root -> ACCESS_DENIED; rename onto an existing
+        // sibling name -> KEY_EXISTS; case-only -> BAD_REQUEST.
+        let root = cs("");
+        assert_eq!(
+            libreg_key_rename(h, root.as_ptr(), new_name.as_ptr()),
+            LibregStatus::AccessDenied
+        );
+        let sib = cs("Parent\\Sib");
+        assert_eq!(libreg_key_create(h, sib.as_ptr()), LibregStatus::Ok);
+        let take = cs("Sib");
+        assert_eq!(
+            libreg_key_rename(h, new.as_ptr(), take.as_ptr()),
+            LibregStatus::KeyExists
+        );
+        let case_only = cs("NEW");
+        assert_eq!(
+            libreg_key_rename(h, new.as_ptr(), case_only.as_ptr()),
+            LibregStatus::BadRequest
+        );
+
+        assert_eq!(libreg_hive_close(h), LibregStatus::Ok);
+        let _ = std::fs::remove_file(&path);
+    }
+}

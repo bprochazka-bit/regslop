@@ -38,6 +38,22 @@ supplies, spec appends, mirroring ADR 0004).
   C-ABI-specific: `agents/linux/src/libreg_backend.rs:319` hardcodes
   `class_name: None`, so the libreg HTTP backend also diverges from offreg on a
   classed key; the agent can now adopt `Hive::key_class` to fix that too.
+- `libreg_key_rename` added after the spec review (#106) listed key/rename,
+  hive/dump, hive/checksum as CONTRACTS ops missing from the ABI. Rename is
+  emulated in the api layer (create + deep-copy + delete) the way the HTTP
+  agent emulates it (libreg has no native rename), composing public Hive ops;
+  it PRESERVES SECURITY (the agent's copy_subtree does not yet; CONTRACTS
+  requires it). Boundary codes: BAD_REQUEST (bad new_name / case-only),
+  ACCESS_DENIED (root), KEY_NOT_FOUND (source), KEY_EXISTS (target). Caveat: a
+  source CLASS is not carried (libreg cannot write a class); created keys have
+  none, so it only matters for a classed loaded key. Now 20 exported symbols.
+- DUMP + CHECKSUM intentionally NOT in the C ABI (told the spec to record this,
+  not deferral): the canonical form (base64 + sort rules) is the harness's
+  ORACLE (`agents/linux/src/canonical.rs`); a second serializer in libreg would
+  risk drifting from the oracle, so the consumer builds canonical from the
+  exposed primitives with the canonicalizer it already trusts. checksum is
+  sha256 (file + canonical), which needs a crypto dep libreg refuses by policy;
+  the consumer hashes the saved bytes / its canonical JSON.
 - `include/libreg.h`: the committed header (status enum, `libreg_hive_t`, all
   18 prototypes, ownership/threading/SDDL docs). `tests/ffi/smoke.c`: a C
   driver that links the cdylib and round-trips a value (compiled + run green:

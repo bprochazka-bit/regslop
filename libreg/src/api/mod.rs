@@ -420,6 +420,95 @@ pub unsafe extern "C" fn libreg_key_class(
     })
 }
 
+/// Deep-copy the key subtree at `src` to `dst` (both full paths) using public
+/// operations: create `dst`, copy its security descriptor and its values, then
+/// recurse into each subkey. This is how rename is emulated; libreg's logical
+/// layer has no native rename, the same situation the HTTP agent emulates
+/// around. Security is carried (CONTRACTS rename preserves the descriptor).
+fn copy_subtree(hive: &mut Hive, src: &str, dst: &str) -> Result<(), ApiError> {
+    hive.create_key(dst)?;
+    hive.set_key_security(dst, hive.key_security(src)?)?;
+    for vname in hive.values(src)? {
+        if let Some((value_type, data)) = hive.get_value(src, &vname)? {
+            hive.set_value(dst, &vname, value_type, &data)?;
+        }
+    }
+    for sub in hive.subkeys(src)? {
+        copy_subtree(hive, &format!("{src}\\{sub}"), &format!("{dst}\\{sub}"))?;
+    }
+    Ok(())
+}
+
+/// Rename the key at `path` to `new_name` (a single component, kept under the
+/// same parent), preserving its values, security, and subtree. Emulated as
+/// create + deep copy + delete, matching the oracle (libreg has no native
+/// rename; CONTRACTS rename semantics). The renamed key's `last_write` is reset
+/// by the copy, which the harness excludes from comparison for a renamed
+/// subtree. Errors: `BAD_REQUEST` (empty `new_name`, a separator in it, or a
+/// case-only rename, which a copy cannot emulate), `ACCESS_DENIED` (renaming
+/// the root), `KEY_NOT_FOUND` (source missing), `KEY_EXISTS` (target taken).
+///
+/// NOTE: a source key's class name is not carried, since libreg cannot write a
+/// class; created keys have none, so this only matters for a classed key read
+/// from a loaded hive.
+///
+/// # Safety
+/// `path` and `new_name` are C strings.
+#[no_mangle]
+pub unsafe extern "C" fn libreg_key_rename(
+    handle: u64,
+    path: *const c_char,
+    new_name: *const c_char,
+) -> LibregStatus {
+    guard(|| {
+        let path = cstr(path, "path")?;
+        let new_name = cstr(new_name, "new_name")?;
+        if new_name.is_empty() || new_name.contains('\\') {
+            return Err(ApiError::bad_request(
+                "new_name must be a single non-empty component",
+            ));
+        }
+        if path.is_empty() {
+            return Err(ApiError::new(
+                LibregStatus::AccessDenied,
+                "cannot rename the root key",
+            ));
+        }
+        handle::with_entry(handle, |entry| {
+            let hive = &mut entry.hive;
+            if hive.resolve(path)?.is_none() {
+                return Err(ApiError::new(
+                    LibregStatus::KeyNotFound,
+                    format!("key not found: {path}"),
+                ));
+            }
+            // Same parent, new leaf; reject a case-only rename (libreg is
+            // case-insensitive and has no in-place name update).
+            let (parent, leaf) = match path.rfind('\\') {
+                Some(i) => (&path[..i], &path[i + 1..]),
+                None => ("", path),
+            };
+            if new_name.eq_ignore_ascii_case(leaf) {
+                return Err(ApiError::bad_request("case-only rename is not supported"));
+            }
+            let new_path = if parent.is_empty() {
+                new_name.to_string()
+            } else {
+                format!("{parent}\\{new_name}")
+            };
+            if hive.resolve(&new_path)?.is_some() {
+                return Err(ApiError::new(
+                    LibregStatus::KeyExists,
+                    format!("key already exists: {new_path}"),
+                ));
+            }
+            copy_subtree(hive, path, &new_path)?;
+            hive.delete_key(path, true)?;
+            Ok(())
+        })
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Values
 // ---------------------------------------------------------------------------

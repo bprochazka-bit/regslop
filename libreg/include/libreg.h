@@ -135,6 +135,16 @@ libreg_status libreg_key_info(libreg_hive_t handle, const char *path,
 libreg_status libreg_key_class(libreg_hive_t handle, const char *path,
                                uint8_t **out_class, size_t *out_len);
 
+/* Rename key `path` to `new_name` (a single component, same parent),
+ * preserving its values, security, and subtree. Emulated as create + deep copy
+ * + delete (libreg has no native rename), so the renamed key's last_write is
+ * reset (the harness excludes it). BAD_REQUEST (empty/separator new_name or a
+ * case-only rename), ACCESS_DENIED (root), KEY_NOT_FOUND (source), KEY_EXISTS
+ * (target taken). A source class name is not carried (libreg cannot write a
+ * class); created keys have none. */
+libreg_status libreg_key_rename(libreg_hive_t handle, const char *path,
+                                const char *new_name);
+
 /* ---- Values ---------------------------------------------------------- */
 
 /* Set value `name` on key `key_path` to `data`/`data_len` of REG_* type
