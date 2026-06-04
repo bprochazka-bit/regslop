@@ -2,6 +2,37 @@
 
 Last updated: 2026-06-04 (library agent)
 
+----- Debian packaging of the C ABI (#115; branch `agent/library-deb-packaging`) -----
+
+THIS session: packaged the libreg C ABI (the #106 cdylib) as installable `.deb`
+artifacts so native bindings load it off a system install, not a repo `target/`
+path. Build + packaging only; NO C ABI code change.
+
+- `libreg/packaging/build-deb.sh` (+ README), modeled on
+  `clients/packaging/build-deb.sh` (pure `dpkg-deb`, no cargo deb tooling).
+  Produces under `libreg/target/deb/`:
+  - `liblibreg0` (runtime): `/usr/lib/<multiarch>/liblibreg.so.0.1.0` + the
+    `liblibreg.so.0` SONAME symlink; `ldconfig` in postinst/postrm; Depends
+    libc6.
+  - `liblibreg-dev`: `libreg.h` -> `/usr/include`, the `liblibreg.so` dev
+    symlink; Depends `liblibreg0 (= 0.1.0)`.
+- SONAME `liblibreg.so.0` is stamped at LINK TIME via
+  `RUSTFLAGS=-Clink-arg=-Wl,-soname,liblibreg.so.0` in the script only; a plain
+  `cargo build` sets no SONAME, so the dev build is unchanged. The script
+  verifies the SONAME with `readelf -d` and fails if missing. Major (0) bumps
+  only on an incompatible ABI change; the file carries the full version so
+  minor revisions coexist under one SONAME.
+- Verified (acceptance): `dpkg-deb -I`/`-c` show the right control, Depends,
+  and SONAME symlink chain (`liblibreg.so` -> `.so.0` -> `.so.0.1.0`). Extracted
+  both packages to a staging root and, with NO repo `target/` and NO
+  `$LIBREG_LIBRARY`: compiled `tests/ffi/smoke.c` against the -dev header +
+  symlink, confirmed the binary's NEEDED is the SONAME `liblibreg.so.0`, ran it
+  green; and `python3 -c "ctypes.CDLL('liblibreg.so.0')"` loads by name (the
+  binding's load path). `.deb` outputs are under gitignored `target/`.
+
+NEXT: open the #115 PR. Unblocks the clients' Python-binding `.deb` (#117),
+which declares a dependency on `liblibreg0` and loads `liblibreg.so.0` by name.
+
 ----- Layer 4 C ABI, first cut (#106; branch `agent/library-c-abi` off main) -----
 
 THIS session (PR #110): implemented Layer 4 `api/`, the stable C ABI (`cdylib`)
