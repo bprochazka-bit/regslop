@@ -1,6 +1,25 @@
 # Harness: STATE
 
-Last updated: 2026-06-03
+Last updated: 2026-06-04
+
+## C ABI acceptance: FFI backend vs the agent (issue #112)
+
+The formal acceptance the contract names for libreg's Layer 4 C ABI (#106) and
+the Python binding (#108): a sequence driven through the C ABI must produce a hive
+semantically equal to the same sequence driven through the agent. Implemented as
+the **option 2** shape from the issue, but with no new comparison code: the agent
+gained a `--backend ffi` (see the linux-agent STATE), so the standard two-agent
+differential runs `--backend libreg` (rlib) vs `--backend ffi` (cdylib surface)
+and the existing runner + `differ/semantic.rs` compare them. The #94 per-agent
+hive paths are what let the two local agents coexist.
+
+`scripts/run.sh --ffi` starts the rlib agent as primary and the C ABI agent as the
+peer and runs the differential. Result: **green** (semantic 17/17, structural
+10/10, bytewise 2/2, roundtrip 8/8) over the op-sequence corpus (lifecycle, key
+create/delete/rename, every REG_* type, security set/read) and all five synthetic
+reference hives loaded and enumerated through the C ABI. The acceptance reaching
+green needed `libreg_key_class` (added by the library after my #110 review) so the
+C ABI exposes everything the canonical form reads.
 
 ## Per-agent hive paths: unblock two-Linux-agent fuzzing (issue #94)
 
