@@ -24,47 +24,76 @@ fn authority_value(sid: &Sid) -> u64 {
     sid.identifier_authority.iter().fold(0u64, |acc, &b| (acc << 8) | b as u64)
 }
 
+/// Well-known SID aliases with fixed, absolute SIDs (the standard SDDL "SID
+/// String" table). Used in BOTH directions so a round-trip preserves the alias
+/// offreg emits and the harness comparator (which keys on SDDL tokens) matches.
+/// These are the abbreviations that appear in real registry ACLs, e.g. AU
+/// (Authenticated Users, S-1-5-11) and CO (Creator Owner, S-1-3-0). Issue #102.
+///
+/// The domain-relative abbreviations (LA = local administrator RID 500, LG =
+/// local guest RID 501) are intentionally absent: they expand to
+/// `S-1-5-21-<machine>-50x`, which has no fixed value for an offline hive with no
+/// machine context (even Win32 `ConvertStringSidToSid` rejects them standalone),
+/// so they fall through to the `S-1-...` path rather than being given a fabricated
+/// SID that would not round-trip against offreg.
+const SID_ALIASES: &[(&str, u64, &[u32])] = &[
+    ("SY", 5, &[18]),         // Local System
+    ("BA", 5, &[32, 544]),    // Built-in Administrators
+    ("BU", 5, &[32, 545]),    // Built-in Users
+    ("WD", 1, &[0]),          // Everyone
+    ("RC", 5, &[12]),         // Restricted Code
+    ("AU", 5, &[11]),         // Authenticated Users
+    ("AN", 5, &[7]),          // Anonymous
+    ("IU", 5, &[4]),          // Interactive
+    ("NU", 5, &[2]),          // Network
+    ("SU", 5, &[6]),          // Service
+    ("CO", 3, &[0]),          // Creator Owner
+    ("CG", 3, &[1]),          // Creator Group
+    ("WR", 5, &[33]),         // Write Restricted Code
+    ("PU", 5, &[32, 547]),    // Power Users
+    ("AO", 5, &[32, 548]),    // Account Operators
+    ("BG", 5, &[32, 546]),    // Built-in Guests
+    ("BO", 5, &[32, 551]),    // Backup Operators
+    ("ER", 5, &[32, 573]),    // Event Log Readers
+];
+
 fn sid_to_string(sid: &Sid) -> String {
-    match (authority_value(sid), sid.sub_authorities.as_slice()) {
-        (5, [18]) => "SY".to_string(),
-        (5, [32, 544]) => "BA".to_string(),
-        (5, [32, 545]) => "BU".to_string(),
-        (1, [0]) => "WD".to_string(),
-        (5, [12]) => "RC".to_string(),
-        (auth, subs) => {
-            let mut s = format!("S-1-{auth}");
-            for sub in subs {
-                s.push_str(&format!("-{sub}"));
-            }
-            s
+    let auth = authority_value(sid);
+    let subs = sid.sub_authorities.as_slice();
+    for (alias, a, s) in SID_ALIASES {
+        if *a == auth && *s == subs {
+            return alias.to_string();
         }
     }
+    let mut s = format!("S-1-{auth}");
+    for sub in subs {
+        s.push_str(&format!("-{sub}"));
+    }
+    s
 }
 
 fn sid_from_string(s: &str) -> Result<Sid> {
-    Ok(match s {
-        "SY" => Sid::local_system(),
-        "BA" => Sid::administrators(),
-        "BU" => Sid::new(5, &[32, 545]),
-        "WD" => Sid::everyone(),
-        "RC" => Sid::restricted_code(),
-        _ if s.starts_with("S-1-") => {
-            let mut parts = s[4..].split('-');
-            let auth: u64 = parts
-                .next()
-                .and_then(|p| p.parse().ok())
-                .ok_or_else(|| AgentError::bad_request(format!("bad SID authority in {s}")))?;
-            if auth > u8::MAX as u64 {
-                return Err(AgentError::bad_request(format!("SID authority too large in {s}")));
-            }
-            let mut subs = Vec::new();
-            for p in parts {
-                subs.push(p.parse().map_err(|_| AgentError::bad_request(format!("bad sub-authority in {s}")))?);
-            }
-            Sid::new(auth as u8, &subs)
+    for (alias, auth, subs) in SID_ALIASES {
+        if *alias == s {
+            return Ok(Sid::new(*auth as u8, subs));
         }
-        _ => return Err(AgentError::bad_request(format!("unknown SID or alias: {s}"))),
-    })
+    }
+    if let Some(rest) = s.strip_prefix("S-1-") {
+        let mut parts = rest.split('-');
+        let auth: u64 = parts
+            .next()
+            .and_then(|p| p.parse().ok())
+            .ok_or_else(|| AgentError::bad_request(format!("bad SID authority in {s}")))?;
+        if auth > u8::MAX as u64 {
+            return Err(AgentError::bad_request(format!("SID authority too large in {s}")));
+        }
+        let mut subs = Vec::new();
+        for p in parts {
+            subs.push(p.parse().map_err(|_| AgentError::bad_request(format!("bad sub-authority in {s}")))?);
+        }
+        return Ok(Sid::new(auth as u8, &subs));
+    }
+    Err(AgentError::bad_request(format!("unknown SID or alias: {s}")))
 }
 
 // --- access mask <-> rights token ---
@@ -262,6 +291,25 @@ mod tests {
     fn custom_descriptor_round_trips() {
         let sddl = "O:BAG:BAD:(A;;KA;;;SY)(A;;KR;;;BU)";
         assert_eq!(to_sddl(&from_sddl(sddl).unwrap()).unwrap(), sddl);
+    }
+
+    #[test]
+    fn standard_sid_aliases_round_trip() {
+        // Every absolute alias parses and emits back to the same token (issue #102).
+        for (alias, _, _) in SID_ALIASES {
+            let sddl = format!("O:BAG:BAD:(A;;KA;;;{alias})");
+            let got = to_sddl(&from_sddl(&sddl).unwrap()).unwrap();
+            assert_eq!(got, sddl, "alias {alias} did not round-trip");
+        }
+        // AU and CO in particular (the ones that appear constantly) must parse.
+        assert!(from_sddl("O:BAG:BAD:(A;;KA;;;AU)").is_ok());
+        assert!(from_sddl("O:BAG:BAD:(A;;KA;;;CO)").is_ok());
+    }
+
+    #[test]
+    fn domain_relative_aliases_fall_through() {
+        // LA/LG have no fixed offline SID; they are not invented as aliases.
+        assert!(from_sddl("O:BAG:BAD:(A;;KA;;;LA)").is_err());
     }
 
     #[test]
