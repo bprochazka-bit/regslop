@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "libreg"
+version = "0.1.0"
+description = "Native Python binding for libreg (the Windows Registry hive library) over its C ABI"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "see repository" }
+authors = [{ name = "libreg project" }]
+keywords = ["windows", "registry", "hive", "libreg", "ctypes", "ffi"]
+
+# No runtime dependencies: the binding links liblibreg.so through the standard
+# library's ctypes. It needs the shared object at run time (built from libreg/
+# with `cargo build --release`), which is a native artifact, not a Python dep.
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/bprochazka-bit/regslop"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["libreg*"]
