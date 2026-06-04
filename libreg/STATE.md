@@ -1,6 +1,101 @@
 # libreg STATE
 
-Last updated: 2026-05-31 (library agent)
+Last updated: 2026-06-04 (library agent)
+
+----- Layer 4 C ABI, first cut (#106; branch `agent/library-c-abi` off main) -----
+
+THIS session (PR #110): implemented Layer 4 `api/`, the stable C ABI (`cdylib`)
+native bindings link against (issue #106), now that the spec ratified the governing
+rules in `docs/ffi-abi.md` + CONTRACTS 0.1.10 (issue #107, PR #109). The ruling:
+the error enum mirrors the CONTRACTS error table 1:1; binary-native
+representation (ptr/len, native ints, NOT base64/QWORD-string); one project
+version via a backend-id getter; panic safety (catch_unwind -> INTERNAL) and
+buffer ownership. The exact symbols/handle type/`libreg.h` were mine to define;
+the spec appends them to `docs/ffi-abi.md` once the cdylib lands (library
+supplies, spec appends, mirroring ADR 0004).
+
+- `Cargo.toml`: `crate-type = ["rlib", "cdylib"]` (rlib keeps the Rust agents
+  linking by path; cdylib exports the C ABI). No new dependencies.
+- `src/api/error.rs`: `LibregStatus` (`#[repr(i32)]`, OK=0 then the 12 CONTRACTS
+  codes in table order), `From<LogicalError>` mapping, and a thread-local
+  last-error string (`set_last_error` / `with_last_error_ptr`). `Unsupported`
+  (a well-formed but rejected request, e.g. delete-root) maps to BAD_REQUEST,
+  never INTERNAL, preserving the caller-error/library-bug split.
+- `src/api/handle.rs`: opaque `uint64_t` handles via a process-global
+  `Mutex<HashMap<u64, HiveEntry>>` (HiveEntry = hive + bound path) with a
+  monotonic counter (0 is never valid). An unknown/closed handle is
+  HANDLE_INVALID, never UB. Poisoned-lock recovery via `into_inner`.
+- `src/api/mod.rs`: 19 `#[no_mangle] extern "C"` entry points, each wrapped in
+  `guard()` (catch_unwind -> INTERNAL). version, last_error, free; hive
+  create/load/save/close; key create/delete/list_subkeys/list_values/info/class;
+  value set/get/delete; key_security get/set; validate. Buffers handed out as
+  (ptr,len) freed by `libreg_free`; name lists as NUL-separated UTF-8 + count.
+- `libreg_key_class` + `Hive::key_class` (logical) added after the harness
+  flagged (#110 review) that the canonical form COMPARES `class_name` (only
+  `last_write` is ignore-able), and nothing exposed it. The logical getter
+  reads the nk's class fields and decodes the UTF-16LE class bytes; the C ABI
+  returns it as UTF-8 (len 0 = absent). NOTE: this was a libreg-wide gap, not
+  C-ABI-specific: `agents/linux/src/libreg_backend.rs:319` hardcodes
+  `class_name: None`, so the libreg HTTP backend also diverges from offreg on a
+  classed key; the agent can now adopt `Hive::key_class` to fix that too.
+- `libreg_key_rename` added after the spec review (#106) listed key/rename,
+  hive/dump, hive/checksum as CONTRACTS ops missing from the ABI. Rename is
+  emulated in the api layer (create + deep-copy + delete) the way the HTTP
+  agent emulates it (libreg has no native rename), composing public Hive ops;
+  it PRESERVES SECURITY (the agent's copy_subtree does not yet; CONTRACTS
+  requires it). Boundary codes: BAD_REQUEST (bad new_name / case-only),
+  ACCESS_DENIED (root), KEY_NOT_FOUND (source), KEY_EXISTS (target). Caveat: a
+  source CLASS is not carried (libreg cannot write a class); created keys have
+  none, so it only matters for a classed loaded key. Now 20 exported symbols.
+- DUMP + CHECKSUM intentionally NOT in the C ABI (told the spec to record this,
+  not deferral): the canonical form (base64 + sort rules) is the harness's
+  ORACLE (`agents/linux/src/canonical.rs`); a second serializer in libreg would
+  risk drifting from the oracle, so the consumer builds canonical from the
+  exposed primitives with the canonicalizer it already trusts. checksum is
+  sha256 (file + canonical), which needs a crypto dep libreg refuses by policy;
+  the consumer hashes the saved bytes / its canonical JSON.
+- `include/libreg.h`: the committed header (status enum, `libreg_hive_t`, all
+  18 prototypes, ownership/threading/SDDL docs). `tests/ffi/smoke.c`: a C
+  driver that links the cdylib and round-trips a value (compiled + run green:
+  `cc -I include tests/ffi/smoke.c -L target/release -llibreg`).
+- Tests: `src/api/tests.rs` drives the full exported surface (create, all
+  REG_* types set/get, list, info, binary security get/set round-trip,
+  validate clean, save/close/reload, plus the caller-error paths:
+  HANDLE_INVALID, BAD_REQUEST on null, HIVE_NOT_FOUND, KEY_HAS_CHILDREN,
+  KEY_EXISTS, VALUE_NOT_FOUND). Full suite GREEN (138 lib + integration), all
+  18 symbols verified exported via `nm -D`.
+
+DESIGN NOTES / for the spec + harness + clients agents:
+- SECURITY IS BINARY, NOT SDDL. `docs/ffi-abi.md` scope says "security (get/set
+  SDDL)", but libreg has no SDDL parser (ADR 0003 / issue #102 make the
+  SDDL<->binary conversion the consumer's job, exactly as on the HTTP side). So
+  `libreg_key_security_{get,set}` expose the raw binary self-relative
+  descriptor (ptr,len), mirroring `Hive::key_security`. The binding/harness
+  converts SDDL, reusing `clients/cli-core/src/sddl.rs`. RAISE TO SPEC: the
+  doc's "get/set SDDL" wording vs the binary boundary, before the symbols are
+  appended to `docs/ffi-abi.md`.
+- NO CANONICAL DUMP / CHECKSUM in this cut. The canonical form (base64, JSON
+  sort rules) and sha256 belong to the consumer (the agent builds canonical
+  from libreg primitives; sha256 needs a dep libreg does not take). The C ABI
+  instead exposes the ENUMERATION primitives (list_subkeys, list_values,
+  value_get with type, key_security) so the harness FFI backend builds the
+  canonical form itself, exactly as the HTTP agent does. validate IS exposed.
+- RENAME deferred: libreg's logical layer has no native rename; the agent
+  emulates it (copy+delete). A C ABI rename would emulate the same way; left to
+  a follow-up (or the binding composes it from the primitives).
+- `save` writes a clean primary (`to_file`) only; it does NOT write the
+  transaction logs. Log-writing save / recovery through the C ABI is a
+  follow-up if a binding needs it (the recovery axis is exercised via the HTTP
+  `/test/crash_save` path, not the C ABI).
+
+NEXT: (1) open the #106 PR. (2) once merged, supply the symbol list to the spec
+agent for the follow-up `contracts` PR appending it to `docs/ffi-abi.md`, and
+raise the SDDL-vs-binary wording question. (3) coordinate with the harness agent
+to wire an FFI-driven backend (the acceptance's cross-agent `semantic` check).
+(4) optional follow-ups: rename, log-writing save, a canonical-dump helper if a
+consumer wants it in-library rather than built from primitives.
+
+----- prior: recovery-precedence fix (#96, merged) and earlier below -----
 
 Merge state: ALL 11 steps on main; every differential axis GREEN, including
 recovery 3/3 (the linux agent wired `/test/crash_save` and the harness drives

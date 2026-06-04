@@ -8,6 +8,9 @@ license = "MIT OR Apache-2.0"
 [lib]
 name = "libreg"
 path = "src/lib.rs"
+# rlib so the Rust clients (the agents) keep linking libreg by path; cdylib so
+# native bindings can link the Layer 4 C ABI (api/, issue #106).
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 
