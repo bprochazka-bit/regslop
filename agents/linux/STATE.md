@@ -1,6 +1,16 @@
 # Linux Agent: STATE
 
-Last updated: 2026-06-04
+Last updated: 2026-06-05
+
+## Unsupported maps to BAD_REQUEST, not INTERNAL (issue #127)
+
+libreg's #129 made `key_create` reject a key name longer than the Windows limit
+(returning `LogicalError::Unsupported`, libreg's caller-error channel). The C ABI
+maps `Unsupported -> BadRequest`, but `LibregBackend::map_err` still mapped it to
+`INTERNAL` (reserved for library bugs), so the agent returned the wrong code.
+Fixed `map_err`: `Unsupported -> BadRequest`, matching the C ABI and the contract.
+Verified: the live agent now returns `BAD_REQUEST` for a 257-char name (256 still
+ok); the libreg-vs-ffi differential stays green; unit tests guard the mapping.
 
 ## FfiBackend: the C ABI as a Backend, for the FFI acceptance (issue #112)
 

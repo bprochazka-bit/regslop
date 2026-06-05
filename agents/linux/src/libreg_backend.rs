@@ -65,8 +65,12 @@ fn map_err(e: LogicalError) -> AgentError {
             Code::KeyHasChildren,
             "key has subkeys, pass recursive=true to delete",
         ),
+        // Unsupported is libreg's caller-error channel for a well-formed but
+        // rejected request (an over-long key name, #127; a root delete), so it is
+        // BAD_REQUEST, not INTERNAL (which is reserved for library bugs). This
+        // matches the C ABI's LogicalError -> BadRequest mapping.
         LogicalError::Unsupported(what) => {
-            AgentError::new(Code::Internal, format!("libreg does not support this yet: {what}"))
+            AgentError::new(Code::BadRequest, format!("request rejected by libreg: {what}"))
         }
         LogicalError::Format(f) => AgentError::new(Code::HiveCorrupt, format!("libreg format error: {f}")),
     }
@@ -391,5 +395,25 @@ impl Backend for LibregBackend {
             let problems = e.hive.validate();
             Ok(Validation { valid: problems.is_empty(), errors: problems, warnings: Vec::new() })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_maps_to_bad_request() {
+        // libreg's Unsupported is its caller-error channel for a well-formed but
+        // rejected request (an over-long key name, #127; a root delete), so the
+        // agent surfaces BAD_REQUEST, not INTERNAL (reserved for library bugs),
+        // matching the C ABI's LogicalError -> BadRequest mapping.
+        assert_eq!(map_err(LogicalError::Unsupported("name too long")).code, Code::BadRequest);
+    }
+
+    #[test]
+    fn logical_errors_map_to_their_codes() {
+        assert_eq!(map_err(LogicalError::NotFound).code, Code::KeyNotFound);
+        assert_eq!(map_err(LogicalError::HasSubkeys).code, Code::KeyHasChildren);
     }
 }
