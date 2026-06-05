@@ -25,6 +25,14 @@ use crate::format::nk::OFFSET_NONE;
 use crate::format::security_descriptor::default_key_security_descriptor_bytes;
 use crate::format::FormatError;
 
+/// Maximum length of a single key-name component, in UTF-16 code units (how
+/// Windows measures a key name). offreg accepts a 256-unit name and rejects
+/// 257 (issue #127), and a hive with a longer name is not loadable by Windows,
+/// so libreg refuses to build one (Hard Rule 4: match offreg). Provisional
+/// until the spec pins the exact limit; offreg's observed boundary is 256
+/// (the documented registry limit is 255).
+const MAX_KEY_NAME_UNITS: usize = 256;
+
 /// Errors from logical-layer operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogicalError {
@@ -362,6 +370,15 @@ impl Hive {
     }
 
     fn add_child(&mut self, parent_off: u32, name: &str) -> Result<u32, LogicalError> {
+        // Refuse a name component longer than Windows accepts; a hive with one
+        // is not loadable by offreg (issue #127). This is a caller error, like
+        // the root-delete refusal below; the C ABI surfaces it as BAD_REQUEST.
+        if name.encode_utf16().count() > MAX_KEY_NAME_UNITS {
+            return Err(LogicalError::Unsupported(
+                "key name component exceeds the Windows length limit",
+            ));
+        }
+
         // A created key carries the ratified default descriptor, shared with
         // every other key that has the same descriptor (offreg deduplicates;
         // see ref_multi.hiv). Since the root carries the same descriptor, the
@@ -877,6 +894,35 @@ mod tests {
         let mut hive = Hive::new_empty();
         assert!(matches!(
             hive.delete_key("", false),
+            Err(LogicalError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_key_name_longer_than_windows_allows() {
+        // offreg accepts a 256-unit component and rejects 257 (issue #127);
+        // libreg must match the boundary so it never builds a Windows-invalid
+        // hive. The rejection is a caller error (Unsupported -> BAD_REQUEST).
+        let mut hive = Hive::new_empty();
+        hive.create_key("K").unwrap();
+
+        let ok = "L".repeat(256);
+        assert!(
+            hive.create_key(&format!("K\\{ok}")).is_ok(),
+            "256 is allowed"
+        );
+
+        let too_long = "L".repeat(257);
+        assert!(matches!(
+            hive.create_key(&format!("K\\{too_long}")),
+            Err(LogicalError::Unsupported(_))
+        ));
+        // The over-long key was not created.
+        assert_eq!(hive.subkeys("K").unwrap(), vec![ok]);
+
+        // An over-long intermediate component is rejected too, not just a leaf.
+        assert!(matches!(
+            hive.create_key(&format!("{too_long}\\child")),
             Err(LogicalError::Unsupported(_))
         ));
     }

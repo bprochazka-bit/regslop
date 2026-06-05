@@ -2,6 +2,35 @@
 
 Last updated: 2026-06-04 (library agent)
 
+----- Reject over-long key names (#127; branch `agent/library-key-name-limit`) -----
+
+THIS session: the operation fuzzer found libreg ACCEPTS a key_create whose name
+component is longer than Windows allows (offreg accepts 256 units, rejects 257),
+building a hive offreg cannot load (#127, a semantic op-divergence). Fixed in
+the logical create path.
+
+- `logical::add_child` now rejects a name component whose UTF-16 length exceeds
+  `MAX_KEY_NAME_UNITS = 256` (offreg's observed boundary; the documented limit
+  is 255, so the const is provisional pending a spec ruling). It validates the
+  CREATE path only (every new component, leaf or intermediate), so loading and
+  reading are unaffected. Returns `LogicalError::Unsupported`, the existing
+  caller-error channel (same as the root-delete refusal). Hard Rule 4: match
+  offreg, do not build a Windows-invalid hive.
+- C ABI surfaces it as BAD_REQUEST (my `Unsupported -> BadRequest` mapping), the
+  code the issue wants. Tests: a logical test (256 ok, 257 rejected, over-long
+  intermediate rejected, key not created) and a C ABI test (256 ok, 257 ->
+  BAD_REQUEST). 141 lib green, fmt clean.
+
+CROSS-COMPONENT / for the agent + spec (noted on #127): the HTTP agent maps
+`Unsupported -> INTERNAL` (`agents/linux/src/libreg_backend.rs:68`), so on the
+HTTP side an over-long create now returns INTERNAL, which MATCHES offreg's
+current INTERNAL (#126) and so RESOLVES the divergence (both reject, no key).
+The cleaner BAD_REQUEST on the HTTP side needs either an agent-edge check (like
+their existing empty-component validation in `check_path`) or a new libreg
+caller-error variant (a breaking change to `LogicalError`'s exhaustive match,
+needs agent signoff). Spec question raised: pin the exact limit (256 vs 255)
+and the code (BAD_REQUEST).
+
 ----- Debian packaging of the C ABI (#115; branch `agent/library-deb-packaging`) -----
 
 THIS session: packaged the libreg C ABI (the #106 cdylib) as installable `.deb`
