@@ -12,6 +12,7 @@ path = "src/main.rs"
 ureq = "3"
 http = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# unbounded_depth lifts the parser recursion limit for deep-hive dumps (#121).
+serde_json = { version = "1", features = ["unbounded_depth"] }
 serde_yaml = "0.9"
 libc = "0.2"

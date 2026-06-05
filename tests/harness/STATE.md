@@ -2,6 +2,22 @@
 
 Last updated: 2026-06-04
 
+## Deep-hive dumps: lift the client parser recursion limit (issue #121)
+
+The operation fuzzer found that a deep hive makes `/hive/dump` return canonical
+JSON nested past serde_json's default recursion limit (128). The agent returns a
+complete, valid body; it was the harness *client's* own parse
+(`serde_json::from_str` in `client.rs`) that failed with "recursion limit
+exceeded", surfacing as a spurious test failure. The canonical form nests ~2 JSON
+levels per key level, so a hive deeper than ~64 keys trips it, and the registry
+allows up to 512.
+
+Fix: parse responses through `serde_json::Deserializer::from_str(...)
+.disable_recursion_limit()` (the `unbounded_depth` feature in `Cargo.toml`).
+Registry depth is bounded, so the OS stack absorbs the recursion without
+serde_stacker. Regression test `tests/deep_hive.yaml` (70 levels, ~140 JSON deep)
+now passes; semantic is 18/18.
+
 ## C ABI acceptance: FFI backend vs the agent (issue #112)
 
 The formal acceptance the contract names for libreg's Layer 4 C ABI (#106) and
