@@ -128,7 +128,15 @@ impl Client {
             .body_mut()
             .read_to_string()
             .map_err(|e| format!("reading response from {}: {e}", self.name))?;
-        serde_json::from_str(&text)
+        // The canonical dump nests ~2 JSON levels per key level, so a deep hive
+        // (the registry allows up to 512 levels) blows past serde_json's default
+        // recursion limit of 128. That is the harness's own parser, not an agent
+        // error (the agent returns a complete, valid body), so lift the limit
+        // here. Registry depth is bounded, so the OS stack handles the recursion
+        // without serde_stacker. Issue #121.
+        let mut de = serde_json::Deserializer::from_str(&text);
+        de.disable_recursion_limit();
+        Envelope::deserialize(&mut de)
             .map_err(|e| format!("bad envelope from {} for {path}: {e}; body was: {text}", self.name))
     }
 
