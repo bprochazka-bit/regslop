@@ -8,6 +8,21 @@ use crate::offreg::key::{self, Key};
 use crate::time::filetime_to_iso8601;
 use crate::state::AppState;
 
+/// The hive root (empty path) is structurally protected: it cannot be deleted
+/// or renamed. CONTRACTS 0.1.13 pins this to ACCESS_DENIED (not INTERNAL, which
+/// is reserved for agent bugs, and not KEY_NOT_FOUND, since the root exists).
+/// offreg itself returns ERROR_BADKEY/INTERNAL on root delete and a stale
+/// KEY_NOT_FOUND on root rename, so we reject before reaching offreg.
+fn reject_root(path: &str, op: &str) -> Result<(), AgentError> {
+    if path.is_empty() {
+        return Err(AgentError::new(
+            "ACCESS_DENIED",
+            format!("cannot {op} the hive root: it is structurally protected"),
+        ));
+    }
+    Ok(())
+}
+
 /// POST /key/create { handle, path } -> {}
 pub fn create(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
@@ -31,6 +46,7 @@ pub fn delete(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
     let hive = arc.lock().unwrap();
     let path = req_path(body, "path")?;
+    reject_root(&path, "delete")?;
     let recursive = opt_bool(body, "recursive", false);
 
     if !recursive {
@@ -58,6 +74,7 @@ pub fn rename(state: &AppState, body: &Value) -> Result<Value, AgentError> {
     let arc = get_hive(state, body)?;
     let hive = arc.lock().unwrap();
     let path = req_path(body, "path")?;
+    reject_root(&path, "rename")?;
     let new_name = req_str(body, "new_name")?;
 
     let parent = path.rsplit_once('\\').map(|(p, _)| p).unwrap_or("");
@@ -109,4 +126,26 @@ pub fn info(state: &AppState, body: &Value) -> Result<Value, AgentError> {
         "subkey_count": info.subkey_count,
         "value_count": info.value_count,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reject_root;
+
+    #[test]
+    fn root_delete_and_rename_are_access_denied() {
+        // CONTRACTS 0.1.13: the empty path is the hive root and is structurally
+        // protected. Both operations must report ACCESS_DENIED, never INTERNAL
+        // or KEY_NOT_FOUND.
+        let del = reject_root("", "delete").unwrap_err();
+        assert_eq!(del.code, "ACCESS_DENIED");
+        let ren = reject_root("", "rename").unwrap_err();
+        assert_eq!(ren.code, "ACCESS_DENIED");
+    }
+
+    #[test]
+    fn non_root_paths_pass_the_guard() {
+        assert!(reject_root("Software", "delete").is_ok());
+        assert!(reject_root("Software\\Acme", "rename").is_ok());
+    }
 }

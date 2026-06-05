@@ -23,6 +23,17 @@ Builds clean for the gnu target, 19 unit tests pass under wine (3 new). Needs th
 rebuilt exe redeployed/restarted on the VM before the harness can add the
 cross-agent malformed-request negative test (the Linux side already conforms).
 
+**Follow-up (2026-06-04): root delete/rename `ACCESS_DENIED` (CONTRACTS 0.1.13, issue #126).**
+0.1.13 pins delete/rename of the hive root (empty path) to `ACCESS_DENIED`: the
+root is structurally protected, so it is NOT `INTERNAL` (not a bug) and NOT
+`KEY_NOT_FOUND` (the root exists). Previously the agent let these fall through to
+offreg, which returns `INTERNAL` on root delete and a stale `KEY_NOT_FOUND` on
+root rename. Fixed in `handlers/key.rs` with a `reject_root` guard run before any
+offreg call in both `delete` and `rename`. Builds clean for the gnu target; 21
+unit tests pass under wine (2 new). libreg already conforms. Needs the rebuilt exe
+redeployed/restarted on the VM for the harness to confirm green on root-touching
+fuzz sequences.
+
 This session (earlier) did no agent-code changes. It used the live agent as the project's
 offreg oracle to answer the outstanding corpus-gated spec questions, and added
 synthetic reference hives to the corpus:
