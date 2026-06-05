@@ -296,6 +296,19 @@ fn c_abi_reports_caller_errors() {
         );
         assert_eq!(libreg_key_delete(handle, a.as_ptr(), 1), LibregStatus::Ok);
 
+        // A key name longer than Windows allows is a caller error (issue #127):
+        // 256 units is accepted, 257 is BAD_REQUEST.
+        let ok_name = cs(&"L".repeat(256));
+        assert_eq!(
+            libreg_key_create(handle, ok_name.as_ptr()),
+            LibregStatus::Ok
+        );
+        let long_name = cs(&"L".repeat(257));
+        assert_eq!(
+            libreg_key_create(handle, long_name.as_ptr()),
+            LibregStatus::BadRequest
+        );
+
         assert_eq!(libreg_hive_close(handle), LibregStatus::Ok);
     }
 }
