@@ -9,7 +9,7 @@ native language bindings link against is governed by its companion
 `docs/ffi-abi.md`, which carries this same version and reuses the error-code
 table and canonical-form oracle defined here. Both are the spec agent's.
 
-**Current version: 0.1.12**
+**Current version: 0.1.13**
 
 ## Versioning
 
@@ -363,7 +363,7 @@ pass are warnings, not errors.
 | KEY_EXISTS            | create called on existing path                  |
 | VALUE_NOT_FOUND       | named value does not exist on key               |
 | TYPE_MISMATCH         | data shape does not match declared type         |
-| ACCESS_DENIED         | security descriptor blocks operation            |
+| ACCESS_DENIED         | operation refused: descriptor blocks it, or the target is structurally protected (e.g. the hive root) |
 | LOG_CORRUPT           | transaction log replay failed                   |
 | KEY_HAS_CHILDREN      | non-recursive delete of a key that has subkeys   |
 | BAD_REQUEST           | request is malformed; caller error, not agent bug |
@@ -378,6 +378,11 @@ relies on this split to tell test mistakes from real defects. `BAD_REQUEST`
 is distinct from `TYPE_MISMATCH`: the latter applies when a well-formed
 `/value/set` carries `data` that does not fit the declared REG type.
 
+Deleting or renaming the hive root (`path` is the empty string) MUST be
+refused with `ACCESS_DENIED`. The root cannot be removed or renamed; this is
+a structural protection, not a bug, so it is NOT `INTERNAL`, and the root
+exists, so it is NOT `KEY_NOT_FOUND`.
+
 ## What This Document Does Not Cover
 
 - The in-process C ABI for native language bindings: governed by the
@@ -390,6 +395,12 @@ is distinct from `TYPE_MISMATCH`: the latter applies when a well-formed
 
 ## Change Log
 
+- 0.1.13 (patch): pin the canonical error for delete/rename of the hive root
+  to `ACCESS_DENIED` (issue #122). The root is structurally protected, so it
+  is not `INTERNAL` (not a bug) nor `KEY_NOT_FOUND` (the root exists);
+  broadened the `ACCESS_DENIED` definition to cover structural protection.
+  libreg already conforms; the Windows agent remaps its INTERNAL (delete) and
+  KEY_NOT_FOUND (rename) to match. Error-mapping alignment; no wire change.
 - 0.1.12 (patch): fix misleading wording in `docs/ffi-abi.md` (issue #116).
   The Scope and Acceptance summaries said the C ABI security ops are "SDDL";
   the C ABI crosses the raw binary self-relative descriptor and SDDL
