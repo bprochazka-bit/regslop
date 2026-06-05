@@ -97,9 +97,34 @@ const VALUE_OPS: &[&str] = &["value_set", "value_delete", "value_get"];
 const SECURITY_OPS: &[&str] = &["key_security_get", "key_security_set"];
 const DIAG_OPS: &[&str] = &["hive_dump", "hive_checksum", "hive_validate"];
 
-/// Generate one sequence of about `body_len` body operations. `cov` is updated
-/// with every op emitted so a later sequence in the same run keeps balancing.
+/// Limits on the expensive boundary cases. The defaults preserve the historical
+/// behavior (deep paths and a >507-entry subkey list to drive lf/lh -> ri
+/// promotion). Runs against the network VM should lower both: hundreds of
+/// `key_create` round-trips per sequence are painfully slow over the link, and
+/// deep paths overflow the harness JSON parser (issue #121).
+#[derive(Clone, Copy)]
+pub struct GenOpts {
+    /// Max key-path depth for generated paths and the deep-path boundary case.
+    pub max_depth: usize,
+    /// Max sibling count for the many-subkeys boundary case.
+    pub max_subkeys: u64,
+}
+
+impl Default for GenOpts {
+    fn default() -> Self {
+        GenOpts { max_depth: 64, max_subkeys: 520 }
+    }
+}
+
+/// Generate one sequence of about `body_len` body operations with default
+/// (unrestricted) limits.
 pub fn generate(seed: u64, body_len: usize, cov: &mut Coverage) -> OpSeq {
+    generate_with(seed, body_len, cov, GenOpts::default())
+}
+
+/// Generate one sequence with explicit limits (see [`GenOpts`]). `cov` is updated
+/// with every op emitted so a later sequence in the same run keeps balancing.
+pub fn generate_with(seed: u64, body_len: usize, cov: &mut Coverage, opts: GenOpts) -> OpSeq {
     let mut rng = Rng::new(seed);
     let mut ops: Vec<Value> = Vec::new();
 
@@ -121,11 +146,11 @@ pub fn generate(seed: u64, body_len: usize, cov: &mut Coverage) -> OpSeq {
 
     for _ in 0..body_len {
         match rng.weighted(CAT_CUM) {
-            0 => key_op(&mut rng, cov, &mut st, &mut ops),
+            0 => key_op(&mut rng, cov, &mut st, &mut ops, opts),
             1 => value_op(&mut rng, cov, &mut st, &mut ops),
             2 => security_op(&mut rng, cov, &mut st, &mut ops),
             3 => lifecycle_op(&mut rng, cov, &mut st, &mut ops),
-            4 => boundary_op(&mut rng, cov, &mut st, &mut ops),
+            4 => boundary_op(&mut rng, cov, &mut st, &mut ops, opts),
             _ => misuse_op(&mut rng, cov, &mut st, &mut ops),
         }
     }
@@ -156,12 +181,16 @@ fn h(st: &State) -> Value {
     json!(format!("${}", st.handle))
 }
 
-fn key_op(rng: &mut Rng, cov: &mut Coverage, st: &mut State, ops: &mut Vec<Value>) {
+fn key_op(rng: &mut Rng, cov: &mut Coverage, st: &mut State, ops: &mut Vec<Value>, opts: GenOpts) {
     let chosen = pick(rng, cov, KEY_OPS);
     cov.record(chosen);
     match chosen {
         "key_create" => {
-            let p = if rng.chance(1, 2) { paths::common_path(rng) } else { paths::key_path(rng) };
+            let p = if rng.chance(1, 2) {
+                paths::common_path(rng)
+            } else {
+                paths::key_path_capped(rng, opts.max_depth)
+            };
             ops.push(op(vec![("op", json!("key_create")), ("handle", h(st)), ("path", json!(p.clone()))]));
             if !p.is_empty() && !st.keys.contains(&p) {
                 st.keys.push(p);
@@ -288,12 +317,12 @@ fn lifecycle_op(rng: &mut Rng, cov: &mut Coverage, st: &mut State, ops: &mut Vec
     }
 }
 
-fn boundary_op(rng: &mut Rng, cov: &mut Coverage, st: &mut State, ops: &mut Vec<Value>) {
+fn boundary_op(rng: &mut Rng, cov: &mut Coverage, st: &mut State, ops: &mut Vec<Value>, opts: GenOpts) {
     cov.record("key_create");
     match rng.below(3) {
-        // Very deep path.
+        // Very deep path (clamped to the configured max depth).
         0 => {
-            let depth = rng.range(24, 64) as usize;
+            let depth = (rng.range(24, 64) as usize).clamp(1, opts.max_depth.max(1));
             let p: Vec<String> = (0..depth).map(|_| paths::component(rng)).collect();
             let p = p.join("\\");
             ops.push(op(vec![("op", json!("key_create")), ("handle", h(st)), ("path", json!(p.clone()))]));
@@ -313,7 +342,7 @@ fn boundary_op(rng: &mut Rng, cov: &mut Coverage, st: &mut State, ops: &mut Vec<
         // general op fuzzer keeps its throughput up.
         _ => {
             let parent = paths::common_path(rng);
-            let count = *rng.choice(&[8u64, 32, 64, 520]);
+            let count = (*rng.choice(&[8u64, 32, 64, 520])).min(opts.max_subkeys.max(1));
             for i in 0..count {
                 let p = format!("{parent}\\s{i:05}");
                 ops.push(op(vec![("op", json!("key_create")), ("handle", h(st)), ("path", json!(p))]));

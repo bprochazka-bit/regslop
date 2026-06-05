@@ -136,6 +136,37 @@ scale and the #97 fix holds broadly, not just on the one minimal repro. No
 recovery defects found. This is the highest-value mode available without the
 Windows VM (recovery is libreg-internal; offreg writes no logs).
 
+## Real offreg differential (the Windows VM came back)
+
+`vmreg.lan` (libvirt NAT, IP is dynamic: re-resolve via DNS) hosts the real
+offreg-10.0.22621 agent on :7879. Ran libreg vs real offreg:
+
+- Authored suite: **GREEN** (semantic 17/17, structural 10/10, roundtrip 8/8;
+  bytewise = allocator-divergence warnings only). libreg is faithful to Windows
+  on the authored cases.
+- `op_fuzz` capped (`--max-depth 16 --max-subkeys 64`, needed for VM courtesy
+  and to dodge the now-fixed #121): high raw divergence rate, which triage
+  collapsed to a few root causes. KEY LESSON: most do NOT reproduce as isolated
+  single ops; verify each class with direct per-agent calls (offreg needs
+  Windows paths) before filing.
+
+Findings from the offreg differential:
+- **#127 (real libreg bug, filed):** libreg accepts key names > 256 chars that
+  offreg/Windows reject. This is the primary root cause: a libreg-only over-long
+  key shifts the sorted subkey list and makes downstream list/info/security ops
+  on that key diverge (explains the subkey-count, ordering, and
+  `security_set linux-ok/windows-fail` patterns).
+- **#126 (windows-agent gap, filed):** root delete/rename return INTERNAL /
+  KEY_NOT_FOUND instead of the ACCESS_DENIED that CONTRACTS 0.1.13 pinned
+  (issue #122). libreg already complies.
+- Minor: `key_create "K\\"` (trailing sep) -> libreg BAD_REQUEST vs offreg
+  KEY_EXISTS. Not filed (both reject).
+- Verified fixed: **#121** (harness JSON recursion limit) - deep (depth 80)
+  hives now dump through the harness with no error.
+
+Name handling otherwise matches offreg exactly (case-insensitive dedup, trailing
+dots/spaces kept distinct, unicode, intermediates, leading-separator rejection).
+
 ## Open items for other agents (see issues filed)
 
 - **Spec agent**: whether `hive_load` should replay pre-existing `.LOG1/.LOG2`

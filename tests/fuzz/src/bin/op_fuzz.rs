@@ -42,6 +42,12 @@ struct Args {
     /// false roundtrip failures: the harness reuses a path per seed across runs).
     hive_dir: PathBuf,
     minimize: bool,
+    /// Caps on the expensive boundary cases (deep paths, many-subkey lists).
+    /// Lower them for runs against the network VM, where hundreds of key_create
+    /// round-trips per sequence are slow and deep paths overflow the harness JSON
+    /// parser (issue #121). Defaults preserve full local behavior.
+    max_depth: usize,
+    max_subkeys: u64,
     extra: Vec<String>,
 }
 
@@ -62,6 +68,8 @@ impl Default for Args {
             interesting_dir: PathBuf::from("tests/fuzz/corpus/interesting"),
             hive_dir: PathBuf::from("/tmp"),
             minimize: true,
+            max_depth: 64,
+            max_subkeys: 520,
             extra: Vec::new(),
         }
     }
@@ -86,6 +94,8 @@ fn parse_args() -> Args {
             "--crashes-dir" => a.crashes_dir = PathBuf::from(next()),
             "--interesting-dir" => a.interesting_dir = PathBuf::from(next()),
             "--hive-dir" => a.hive_dir = PathBuf::from(next()),
+            "--max-depth" => a.max_depth = next().parse().unwrap_or_else(|_| fatal("bad --max-depth")),
+            "--max-subkeys" => a.max_subkeys = next().parse().unwrap_or_else(|_| fatal("bad --max-subkeys")),
             "--no-minimize" => a.minimize = false,
             "--windows-smb" => a.extra.push("--windows-smb".to_string()),
             "-h" | "--help" => {
@@ -94,7 +104,7 @@ fn parse_args() -> Args {
                      [--harness-bin PATH] [--linux-host H] [--linux-port N]\n        \
                      [--windows-host H] [--windows-port N] [--windows-smb]\n        \
                      [--crashes-dir DIR] [--interesting-dir DIR]\n        \
-                     [--hive-dir DIR] [--no-minimize]"
+                     [--hive-dir DIR] [--max-depth N] [--max-subkeys N] [--no-minimize]"
                 );
                 std::process::exit(0);
             }
@@ -159,9 +169,10 @@ fn main() {
 
     // 1. Generate. Coverage steers op selection across the whole batch.
     let mut cov = Coverage::new();
+    let gen_opts = ops::GenOpts { max_depth: args.max_depth, max_subkeys: args.max_subkeys };
     let mut seqs: Vec<OpSeq> = Vec::with_capacity(args.count as usize);
     for i in 0..args.count {
-        seqs.push(ops::generate(args.seed.wrapping_add(i), args.ops, &mut cov));
+        seqs.push(ops::generate_with(args.seed.wrapping_add(i), args.ops, &mut cov, gen_opts));
     }
 
     // Fresh output dir so a re-run does not mix old sequences in.
