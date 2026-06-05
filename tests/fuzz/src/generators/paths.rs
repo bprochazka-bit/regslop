@@ -63,8 +63,10 @@ pub fn component(rng: &mut Rng) -> String {
 
 /// A full key path of one or more components joined by a single backslash.
 /// Depth is weighted shallow (most real keys are 1 to 4 deep) with a long tail
-/// for deep-path stress.
-pub fn key_path(rng: &mut Rng) -> String {
+/// for deep-path stress, clamped to `max_depth`. Capping matters for runs
+/// against the network VM (deep paths are slow and overflow the harness JSON
+/// parser, issue #121); pass a large value for unrestricted local runs.
+pub fn key_path_capped(rng: &mut Rng, max_depth: usize) -> String {
     let depth = match rng.below(100) {
         0..=9 => 1,
         10..=44 => 2,
@@ -73,12 +75,18 @@ pub fn key_path(rng: &mut Rng) -> String {
         90..=96 => rng.range(5, 8) as usize,
         // Deep path: stress the recursion and the subkey-list chain.
         _ => rng.range(16, 64) as usize,
-    };
+    }
+    .clamp(1, max_depth.max(1));
     let mut parts = Vec::with_capacity(depth);
     for _ in 0..depth {
         parts.push(component(rng));
     }
     parts.join("\\")
+}
+
+/// Unrestricted depth (the historical behavior): up to ~64 deep.
+pub fn key_path(rng: &mut Rng) -> String {
+    key_path_capped(rng, 64)
 }
 
 /// A shallow path biased toward reuse: depth 1 to 3 drawn purely from the
